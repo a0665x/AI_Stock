@@ -1,0 +1,1371 @@
+from __future__ import annotations
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
+
+from ai_stock.analytics import add_indicators, compute_correlation_table, compute_latest_technical_snapshot
+from ai_stock.attribution import build_attribution_report
+from ai_stock.backtesting import compare_backtest_scenarios, run_backtest
+from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_history, normalize_ohlcv
+from ai_stock.forecasting import build_decision_report
+from ai_stock.i18n import (
+    LANGUAGES,
+    localize_dataframe_for_display,
+    t,
+    translate_dataframe_columns,
+    translate_dataframe_values,
+    translate_mapping,
+    translate_options,
+)
+from ai_stock.factor_research import (
+    build_factor_horizon_comparison,
+    build_factor_research_report,
+    build_horizon_metric_trends,
+    build_ticker_horizon_metric_matrix,
+)
+
+
+st.set_page_config(page_title="AI Stock 決策儀表板", page_icon="📈", layout="wide")
+
+
+def _language_selector() -> str:
+    """Render a compact top-right language selector and return the active language code."""
+    labels = list(LANGUAGES.values())
+    codes = list(LANGUAGES.keys())
+    default_code = st.session_state.get("ui_language", "zh")
+    default_index = codes.index(default_code) if default_code in codes else 0
+    _, language_col = st.columns([0.78, 0.22])
+    with language_col:
+        selected = st.selectbox(
+            "🌐 語言 / Language",
+            labels,
+            index=default_index,
+            key="ui_language_label",
+            label_visibility="collapsed",
+        )
+    code = codes[labels.index(selected)]
+    st.session_state["ui_language"] = code
+    return code
+
+
+UI_LANG = _language_selector()
+_ = lambda text, **kwargs: t(text, UI_LANG, **kwargs)
+
+
+def _install_streamlit_i18n() -> None:
+    """Translate common Streamlit display strings without changing data/model values."""
+    if getattr(st, "_ai_stock_i18n_wrapped", False):
+        return
+
+    def current_lang() -> str:
+        return str(st.session_state.get("ui_language", "zh"))
+
+    def wrap_first_arg(func_name: str) -> None:
+        original = getattr(st, func_name)
+
+        def wrapped(*args, **kwargs):
+            if args and isinstance(args[0], str):
+                args = (t(args[0], current_lang()), *args[1:])
+            if "label" in kwargs and isinstance(kwargs["label"], str):
+                kwargs["label"] = t(kwargs["label"], current_lang())
+            if "help" in kwargs and isinstance(kwargs["help"], str):
+                kwargs["help"] = t(kwargs["help"], current_lang())
+            return original(*args, **kwargs)
+
+        setattr(st, func_name, wrapped)
+
+    for name in [
+        "write",
+        "spinner",
+        "title",
+        "header",
+        "subheader",
+        "markdown",
+        "caption",
+        "info",
+        "warning",
+        "error",
+        "success",
+        "button",
+        "download_button",
+        "file_uploader",
+        "checkbox",
+        "slider",
+        "number_input",
+        "metric",
+        "text_area",
+        "segmented_control",
+        "toggle",
+        "radio",
+        "selectbox",
+        "multiselect",
+    ]:
+        if hasattr(st, name):
+            wrap_first_arg(name)
+
+    def wrap_delta_method(func_name: str) -> None:
+        original = getattr(DeltaGenerator, func_name)
+
+        def wrapped(self, *args, **kwargs):
+            if args and isinstance(args[0], str):
+                args = (t(args[0], current_lang()), *args[1:])
+            if "label" in kwargs and isinstance(kwargs["label"], str):
+                kwargs["label"] = t(kwargs["label"], current_lang())
+            if "help" in kwargs and isinstance(kwargs["help"], str):
+                kwargs["help"] = t(kwargs["help"], current_lang())
+            return original(self, *args, **kwargs)
+
+        setattr(DeltaGenerator, func_name, wrapped)
+
+    for name in [
+        "write",
+        "spinner",
+        "title",
+        "header",
+        "subheader",
+        "markdown",
+        "caption",
+        "info",
+        "warning",
+        "error",
+        "success",
+        "button",
+        "download_button",
+        "file_uploader",
+        "checkbox",
+        "slider",
+        "number_input",
+        "metric",
+        "text_area",
+        "segmented_control",
+        "toggle",
+        "radio",
+        "selectbox",
+        "multiselect",
+    ]:
+        if hasattr(DeltaGenerator, name):
+            wrap_delta_method(name)
+
+    original_tabs = st.tabs
+
+    def tabs_wrapped(labels):
+        return original_tabs([t(str(label), current_lang()) for label in labels])
+
+    st.tabs = tabs_wrapped
+
+    original_expander = st.expander
+
+    def expander_wrapped(label, *args, **kwargs):
+        if isinstance(label, str):
+            label = t(label, current_lang())
+        return original_expander(label, *args, **kwargs)
+
+    st.expander = expander_wrapped
+    st._ai_stock_i18n_wrapped = True
+
+
+_install_streamlit_i18n()
+
+
+ACTION_LABELS_ZH = {
+    "BUY_WATCH": "偏多觀察",
+    "HOLD_WAIT": "等待確認",
+    "SELL_OR_AVOID": "減碼/避開",
+}
+ACTION_LABELS = translate_mapping(ACTION_LABELS_ZH, UI_LANG)
+ACTION_HELP_ZH = {
+    "BUY_WATCH": "模型預估報酬大於近期波動門檻，但仍需等待價格接近買進參考或量價確認。",
+    "HOLD_WAIT": "預估優勢不夠明顯，先觀察，不急著追價。",
+    "SELL_OR_AVOID": "預估報酬偏弱或風險不對稱，偏向減碼、避開或等更低價。",
+}
+ACTION_HELP = translate_mapping(ACTION_HELP_ZH, UI_LANG)
+ACTION_BADGE_ZH = {
+    "BUY_WATCH": "🟢 偏多觀察",
+    "HOLD_WAIT": "🟡 等待確認",
+    "SELL_OR_AVOID": "🔴 減碼/避開",
+}
+ACTION_BADGE = translate_mapping(ACTION_BADGE_ZH, UI_LANG)
+YFINANCE_CACHE_TTL_SECONDS = 60 * 60
+
+
+def _split_tickers(text: str) -> tuple[str, ...]:
+    return tuple(t.strip().upper() for t in text.replace("\n", ",").split(",") if t.strip())
+
+
+@st.cache_data(ttl=YFINANCE_CACHE_TTL_SECONDS, show_spinner=False)
+def _load_yf(tickers: tuple[str, ...], period: str, interval: str) -> pd.DataFrame:
+    return load_history(DataRequest(tickers, period=period, interval=interval, provider="yfinance"))
+
+
+def _clear_cached_market_data() -> None:
+    """Force the next rerun to fetch fresh market data and recompute dependent tables."""
+    _load_yf.clear()
+    clear_yfinance_disk_cache()
+    _cached_snapshot.clear()
+    _cached_correlations.clear()
+    _cached_decision_report.clear()
+    _cached_attribution.clear()
+    _cached_backtest.clear()
+    _cached_scenario_comparison.clear()
+    _cached_factor_research.clear()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_snapshot(prices: pd.DataFrame) -> pd.DataFrame:
+    return compute_latest_technical_snapshot(prices)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_correlations(prices: pd.DataFrame) -> pd.DataFrame:
+    return compute_correlation_table(prices)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_decision_report(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    return build_decision_report(prices, horizon=horizon)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_attribution(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    return build_attribution_report(prices, horizon=horizon)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_backtest(
+    prices: pd.DataFrame,
+    horizon: int,
+    lookback: int,
+    only_buy_watch: bool,
+    trailing_stop_pct: float,
+):
+    return run_backtest(
+        prices,
+        horizon=horizon,
+        lookback=lookback,
+        step=horizon,
+        only_buy_watch=only_buy_watch,
+        exit_rule="stop_loss",
+        trailing_stop_pct=trailing_stop_pct,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_scenario_comparison(
+    prices: pd.DataFrame,
+    horizons: tuple[int, ...],
+    exit_rules: tuple[str, ...],
+    lookback: int,
+    only_buy_watch: bool,
+    trailing_stop_pct: float,
+) -> pd.DataFrame:
+    return compare_backtest_scenarios(
+        prices,
+        horizons=list(horizons),
+        exit_rules=list(exit_rules),
+        lookback=lookback,
+        only_buy_watch=only_buy_watch,
+        trailing_stop_pct=trailing_stop_pct,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_factor_research(
+    prices: pd.DataFrame,
+    window: int,
+    horizon: int,
+    target_threshold_pct: float,
+    model_type: str,
+):
+    return build_factor_research_report(
+        prices,
+        window=window,
+        horizon=horizon,
+        target_threshold=target_threshold_pct / 100,
+        model_type=model_type,
+        top_n=20,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_factor_horizon_comparison(
+    prices: pd.DataFrame,
+    window: int,
+    horizons: tuple[int, ...],
+    target_threshold_pct: float,
+    model_type: str,
+) -> dict[str, pd.DataFrame]:
+    return build_factor_horizon_comparison(
+        prices,
+        window=window,
+        horizons=horizons,
+        target_threshold=target_threshold_pct / 100,
+        model_type=model_type,
+        top_n=20,
+    )
+
+
+def _fmt_price(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):,.2f}"
+
+
+def _fmt_pct(value: float | int | None, digits: int = 2) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):+.{digits}f}%"
+
+
+def _humanize_report(report: pd.DataFrame) -> pd.DataFrame:
+    if report.empty:
+        return report
+    out = report.copy()
+    out["決策"] = out["action"].map(ACTION_LABELS).fillna(out["action"])
+    out["Kelly 建議倉位"] = (out["kelly_fraction"] * 100).round(1)
+    out = translate_dataframe_values(out, UI_LANG)
+    rename = {
+        "ticker": "代號",
+        "last_close": "最新收盤",
+        "predicted_price": "預估價",
+        "expected_return_pct": "模型預估報酬%",
+        "relationship_adjusted_return_pct": "關係調整後報酬%",
+        "suggested_buy_price": "參考買進價",
+        "suggested_sell_price": "參考賣出價",
+        "stop_loss_price": "參考停損價",
+        "risk_unit_pct": "風險單位%",
+        "drawdown_from_60d_high_pct": "距60日高點%",
+        "max_drawdown_60d_pct": "60日最大回撤%",
+        "relationship_pressure_5d": "同/反向關係壓力%",
+        "positive_corr_pressure_5d": "正相關壓力%",
+        "negative_corr_pressure_5d": "反相關壓力%",
+        "kelly_reason": "Kelly 原因",
+        "action_reason": "決策原因",
+        "rsi_14": "RSI14",
+        "bb_position_20": "布林位置",
+        "mfi_14": "MFI14",
+        "model": "模型",
+    }
+    columns = [
+        "ticker",
+        "決策",
+        "last_close",
+        "expected_return_pct",
+        "relationship_adjusted_return_pct",
+        "suggested_buy_price",
+        "suggested_sell_price",
+        "stop_loss_price",
+        "Kelly 建議倉位",
+        "action_reason",
+        "kelly_reason",
+        "risk_unit_pct",
+        "drawdown_from_60d_high_pct",
+        "max_drawdown_60d_pct",
+        "relationship_pressure_5d",
+        "rsi_14",
+        "bb_position_20",
+        "mfi_14",
+        "predicted_price",
+        "model",
+    ]
+    return translate_dataframe_columns(out[[c for c in columns if c in out.columns]].rename(columns=rename), UI_LANG)
+
+
+def _humanize_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
+    if snapshot.empty:
+        return snapshot
+    out = snapshot.copy()
+    rename = {
+        "ticker": "代號",
+        "date": "日期",
+        "last_close": "最新收盤",
+        "return_1d": "1日報酬",
+        "return_5d": "5日報酬",
+        "return_20d": "20日報酬",
+        "sma_20": "SMA20",
+        "sma_60": "SMA60",
+        "ema_20": "EMA20",
+        "ema_60": "EMA60",
+        "rsi_14": "RSI14",
+        "macd_hist": "MACD 柱",
+        "bb_position_20": "布林位置",
+        "atr_pct_14": "ATR%",
+        "stoch_k_14": "KD-K",
+        "stoch_d_3": "KD-D",
+        "mfi_14": "MFI14",
+        "volatility_20d": "20日年化波動",
+        "volume_ratio_20d": "量能比",
+        "drawdown_from_60d_high": "距60日高點",
+        "max_drawdown_60d": "60日最大回撤",
+        "support_20": "20日支撐",
+        "resistance_20": "20日壓力",
+    }
+    percent_cols = ["return_1d", "return_5d", "return_20d", "volatility_20d", "atr_pct_14", "drawdown_from_60d_high", "max_drawdown_60d"]
+    for col in percent_cols:
+        if col in out.columns:
+            out[col] = out[col] * 100
+    return translate_dataframe_columns(out.rename(columns=rename), UI_LANG)
+
+
+def _build_price_chart(one: pd.DataFrame, ticker: str, show_volume: bool) -> go.Figure:
+    ind = add_indicators(one)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Candlestick(
+            x=one["date"],
+            open=one["open"],
+            high=one["high"],
+            low=one["low"],
+            close=one["close"],
+            name=ticker,
+            increasing_line_color="#16a34a",
+            decreasing_line_color="#dc2626",
+        )
+    )
+    fig.add_trace(go.Scatter(x=ind["date"], y=ind["sma_20"], name="SMA20", line={"color": "#2563eb"}))
+    fig.add_trace(go.Scatter(x=ind["date"], y=ind["sma_60"], name="SMA60", line={"color": "#f97316"}))
+    if show_volume:
+        fig.add_trace(
+            go.Bar(
+                x=one["date"],
+                y=one["volume"],
+                name="成交量",
+                marker_color="rgba(100,116,139,0.25)",
+                yaxis="y2",
+            )
+        )
+        fig.update_layout(yaxis2={"overlaying": "y", "side": "right", "showgrid": False, "title": "Volume"})
+    fig.update_layout(
+        height=560,
+        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+    )
+    return fig
+
+
+def _build_corr_heatmap(correlations: pd.DataFrame, tickers: list[str]) -> go.Figure:
+    matrix = pd.DataFrame(1.0, index=tickers, columns=tickers)
+    for _, row in correlations.iterrows():
+        matrix.loc[row["ticker_a"], row["ticker_b"]] = row["return_corr"]
+        matrix.loc[row["ticker_b"], row["ticker_a"]] = row["return_corr"]
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=matrix.values,
+            x=matrix.columns,
+            y=matrix.index,
+            zmin=-1,
+            zmax=1,
+            colorscale="RdBu",
+            reversescale=True,
+            text=matrix.round(2).values,
+            texttemplate="%{text}",
+            hovertemplate="%{y} vs %{x}<br>相關係數=%{z:.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=420, margin={"l": 10, "r": 10, "t": 20, "b": 10})
+    return fig
+
+
+def _build_attribution_chart(rows: pd.DataFrame, ticker: str) -> go.Figure:
+    work = rows[rows["ticker"] == ticker].copy()
+    work = work.sort_values("contribution")
+    colors = ["#dc2626" if value < 0 else "#16a34a" for value in work["contribution"]]
+    fig = go.Figure(
+        go.Bar(
+            x=work["contribution"] * 100,
+            y=work["feature_label"],
+            orientation="h",
+            marker_color=colors,
+            customdata=work[["value", "method"]],
+            hovertemplate="%{y}<br>歸因=%{x:.3f}%<br>指標值=%{customdata[0]:.4f}<br>%{customdata[1]}<extra></extra>",
+        )
+    )
+    fig.add_vline(x=0, line_color="#64748b", line_width=1)
+    fig.update_layout(height=430, margin={"l": 10, "r": 10, "t": 20, "b": 10}, xaxis_title="對未來報酬的模型歸因（百分點）")
+    return fig
+
+
+def _humanize_backtest_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    out = summary.copy()
+    percent_cols = ["win_rate", "stop_loss_hit_rate", "time_exit_rate", "trailing_stop_hit_rate", "cumulative_return", "max_drawdown", "avg_trade_return"]
+    for col in percent_cols:
+        if col in out.columns:
+            out[col] = out[col] * 100
+    out = translate_dataframe_values(out, UI_LANG)
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "ticker": "代號",
+                "strategy": "策略",
+                "holding_days": "持有天數",
+                "exit_rule": "出場規則",
+                "trades": "交易次數",
+                "win_rate": "勝率%",
+                "stop_loss_hit_rate": "停損命中率%",
+                "time_exit_rate": "時間出場率%",
+                "trailing_stop_hit_rate": "移動停損率%",
+                "cumulative_return": "累積報酬%",
+                "max_drawdown": "最大回撤%",
+                "avg_trade_return": "平均單筆報酬%",
+                "profit_factor": "Profit Factor",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _humanize_backtest_trades(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty:
+        return trades
+    out = trades.copy()
+    for col in ["return_pct", "kelly_fraction"]:
+        if col in out.columns:
+            out[col] = out[col] * 100
+    if "action" in out.columns:
+        out["action"] = out["action"].map(ACTION_LABELS).fillna(out["action"])
+    out = translate_dataframe_values(out, UI_LANG)
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "ticker": "代號",
+                "entry_date": "進場日",
+                "exit_date": "出場日",
+                "entry_price": "進場價",
+                "exit_price": "出場價",
+                "return_pct": "單筆報酬%",
+                "stop_hit": "是否停損",
+                "exit_rule": "設定出場規則",
+                "exit_reason": "實際出場原因",
+                "holding_days": "設定持有天數",
+                "action": "當時決策",
+                "expected_return_pct": "當時模型預估%",
+                "relationship_adjusted_return_pct": "當時關係調整%",
+                "kelly_fraction": "當時 Kelly%",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _build_equity_chart(equity_curve: pd.DataFrame, ticker: str | None = None) -> go.Figure:
+    fig = go.Figure()
+    work = equity_curve.copy()
+    if ticker:
+        work = work[work["ticker"] == ticker]
+    for name, group in work.groupby("ticker"):
+        fig.add_trace(
+            go.Scatter(
+                x=group["date"],
+                y=group["cumulative_return"] * 100,
+                mode="lines+markers",
+                name=str(name),
+                hovertemplate="%{x}<br>" + _("累積報酬%") + "=%{y:.2f}%<extra></extra>",
+            )
+        )
+    fig.add_hline(y=0, line_color="#64748b", line_width=1)
+    fig.update_layout(height=360, margin={"l": 20, "r": 20, "t": 40, "b": 20}, yaxis_title=_("累積報酬%"), xaxis_title=_("日期"))
+    return fig
+
+
+def _build_scenario_comparison_chart(comparison: pd.DataFrame) -> go.Figure:
+    work = comparison.copy()
+    if work.empty:
+        return go.Figure()
+    work["label"] = work["ticker"].astype(str) + "｜" + work["strategy"].astype(str)
+    work = work.sort_values("cumulative_return", ascending=True).tail(20)
+    colors = ["#16a34a" if value >= 0 else "#dc2626" for value in work["cumulative_return"]]
+    fig = go.Figure(
+        go.Bar(
+            x=work["cumulative_return"] * 100,
+            y=work["label"],
+            orientation="h",
+            marker_color=colors,
+            customdata=work[["win_rate", "max_drawdown", "stop_loss_hit_rate", "trades"]],
+            hovertemplate="%{y}<br>累積報酬=%{x:.2f}%<br>勝率=%{customdata[0]:.1%}<br>最大回撤=%{customdata[1]:.2%}<br>停損/出場命中=%{customdata[2]:.1%}<br>交易=%{customdata[3]}<extra></extra>",
+        )
+    )
+    fig.add_vline(x=0, line_color="#64748b", line_width=1)
+    fig.update_layout(height=520, margin={"l": 10, "r": 10, "t": 20, "b": 10}, xaxis_title=_("累積報酬%"))
+    return fig
+
+
+def _build_factor_horizon_trend_chart(summary: pd.DataFrame) -> go.Figure:
+    trends = build_horizon_metric_trends(summary)
+    fig = go.Figure()
+    if trends.empty:
+        return fig
+    fig.add_trace(
+        go.Scatter(
+            x=trends["horizon"],
+            y=trends["accuracy"] * 100,
+            mode="lines+markers",
+            name="測試勝率 / Accuracy",
+            line={"color": "#16a34a", "width": 3},
+            hovertemplate="horizon=%{x}天<br>勝率=%{y:.1f}%<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trends["horizon"],
+            y=trends["auc"] * 100,
+            mode="lines+markers",
+            name="AUC",
+            line={"color": "#2563eb", "width": 3},
+            hovertemplate="horizon=%{x}天<br>AUC=%{y:.1f}%<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trends["horizon"],
+            y=trends["baseline_up_rate"] * 100,
+            mode="lines+markers",
+            name="歷史上漲率 baseline",
+            line={"color": "#94a3b8", "dash": "dash"},
+            hovertemplate="horizon=%{x}天<br>baseline=%{y:.1f}%<extra></extra>",
+        )
+    )
+    fig.add_hline(y=50, line_color="#64748b", line_width=1, line_dash="dot")
+    fig.update_layout(
+        height=360,
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        xaxis={"title": "預測天數 horizon", "dtick": 1},
+        yaxis_title="百分比%",
+        hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+    )
+    return fig
+
+
+def _build_factor_ticker_horizon_heatmap(summary: pd.DataFrame, metric: str = "accuracy") -> go.Figure:
+    metric_labels = {
+        "accuracy": "測試勝率 / Accuracy",
+        "auc": "AUC",
+        "baseline_up_rate": "歷史上漲率 baseline",
+    }
+    matrix = build_ticker_horizon_metric_matrix(summary, metric=metric)
+    fig = go.Figure()
+    if matrix.empty:
+        return fig
+    values = matrix.astype(float) * 100
+    fig.add_trace(
+        go.Heatmap(
+            z=values.to_numpy(),
+            x=[f"{int(col)}天" for col in values.columns],
+            y=values.index.astype(str),
+            colorscale="RdYlGn",
+            zmid=50,
+            zmin=0,
+            zmax=100,
+            text=values.round(1).astype(str) + "%",
+            texttemplate="%{text}",
+            hovertemplate="代號=%{y}<br>horizon=%{x}<br>" + metric_labels.get(metric, metric) + "=%{z:.1f}%<extra></extra>",
+            colorbar={"title": "%"},
+        )
+    )
+    fig.update_layout(
+        height=max(280, min(720, 120 + 42 * len(values.index))),
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        xaxis_title="預測天數 horizon",
+        yaxis_title="股票代號",
+    )
+    return fig
+
+
+def _build_factor_importance_chart(importance: pd.DataFrame, ticker: str) -> go.Figure:
+    work = importance[importance["ticker"] == ticker].copy().sort_values("importance").tail(20)
+    colors = ["#16a34a" if value >= 0 else "#dc2626" for value in work["signed_contribution"]]
+    fig = go.Figure(
+        go.Bar(
+            x=work["importance"],
+            y=work["feature_label"],
+            orientation="h",
+            marker_color=colors,
+            customdata=work[["signed_contribution", "method"]],
+            hovertemplate="%{y}<br>重要度=%{x:.5f}<br>方向貢獻=%{customdata[0]:.5f}<br>%{customdata[1]}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=520, margin={"l": 10, "r": 10, "t": 20, "b": 10}, xaxis_title="對第 N 天漲跌分類的重要度")
+    return fig
+
+
+def _build_y_heatmap(heatmap: pd.DataFrame, ticker: str) -> go.Figure:
+    work = heatmap[heatmap["ticker"] == ticker].copy().tail(90)
+    if work.empty:
+        return go.Figure()
+    work["direction_label"] = work["direction"].map({1: "漲", 0: "跌/未達門檻"})
+    fig = go.Figure(
+        go.Heatmap(
+            z=[work["forward_return"].to_numpy() * 100],
+            x=work["target_date"],
+            y=["第N天結果"],
+            colorscale="RdYlGn",
+            zmid=0,
+            text=[work["return_bucket"].to_numpy()],
+            hovertemplate="目標日=%{x}<br>forward return=%{z:.2f}%<br>%{text}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=180, margin={"l": 10, "r": 10, "t": 20, "b": 10}, coloraxis_colorbar_title="報酬%")
+    return fig
+
+
+def _humanize_factor_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    out = summary.copy()
+    for col in ["baseline_up_rate", "accuracy", "auc", "target_threshold"]:
+        if col in out.columns:
+            out[col] = out[col] * 100
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "ticker": "代號",
+                "samples": "樣本數",
+                "train_samples": "訓練樣本",
+                "test_samples": "測試樣本",
+                "baseline_up_rate": "歷史上漲率%",
+                "accuracy": "測試準確率%",
+                "auc": "AUC%",
+                "model": "模型",
+                "method": "歸因方法",
+                "window": "輸入天數",
+                "horizon": "預測天數",
+                "target_threshold": "漲跌門檻%",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _humanize_factor_importance(importance: pd.DataFrame) -> pd.DataFrame:
+    if importance.empty:
+        return importance
+    return translate_dataframe_columns(
+        importance.rename(
+            columns={
+                "ticker": "代號",
+                "horizon": "預測天數",
+                "feature_label": "因子",
+                "importance": "重要度",
+                "signed_contribution": "方向貢獻",
+                "direction": "方向",
+                "method": "方法",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+with st.sidebar:
+    st.header("分析設定")
+    st.caption("1 選資料 → 2 調參數 → 3 看決策摘要")
+
+    source = st.segmented_control("資料來源", ["yfinance", "csv"], default="yfinance")
+    ticker_text = st.text_area("股票代號", "AAPL, MSFT, NVDA", help="可用逗號或換行分隔，例如 AAPL, MSFT, NVDA")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        period = st.selectbox("歷史區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
+    with c2:
+        interval = st.selectbox("K線週期", ["1d", "1wk", "1mo"], index=0)
+
+    horizon = st.slider("決策天數", 1, 30, 5, help="用於 ARIMA / 線性模型的預估 horizon。")
+    st.markdown("##### 因子研究")
+    factor_window = st.slider("因子輸入天數", 3, 21, 7, help="sliding window 的 X：使用過去 N 天 K線/KD/MACD/RSI 等因子。")
+    factor_horizons = st.multiselect(
+        "比較預測天數 horizon",
+        [1, 3, 5, 10],
+        default=[1, 3, 5, 10],
+        help="一次比較未來 1/3/5/10 天漲跌；每個 horizon 會各自訓練模型與計算 SHAP/fallback 重要度。",
+    )
+    if not factor_horizons:
+        factor_horizons = [1]
+    factor_threshold_pct = st.slider("漲跌分類門檻%", 0.0, 2.0, 0.0, step=0.1, help="forward return 高於此門檻才標為上漲，可降低微小雜訊。")
+    factor_model_labels = {
+        "Gradient Boosting": "gradient_boosting",
+        "Random Forest": "random_forest",
+        "Logistic Regression": "logistic",
+    }
+    factor_model_label = st.selectbox("因子模型", list(factor_model_labels), index=0)
+    factor_model_type = factor_model_labels[factor_model_label]
+    backtest_lookback = st.slider("回測訓練視窗", 60, 260, 120, step=10, help="每次回測決策只看此前這段歷史資料。")
+    backtest_compare_enabled = st.toggle("啟用持有天數 / 出場規則比較", value=False, help="多策略比較會同時跑多組回測；需要比較時再開啟，避免首頁載入過慢。")
+    backtest_horizons = st.multiselect("比較持有天數", [3, 5, 10, 20, 30], default=[3, 5, 10], help="回測會比較每種持有天數的結果。", disabled=not backtest_compare_enabled)
+    exit_rule_options_zh = {
+        "時間出場": "time",
+        "停損優先": "stop_loss",
+        "移動停損": "trailing_stop",
+    }
+    exit_rule_display_options = translate_options(exit_rule_options_zh.keys(), UI_LANG)
+    exit_rule_options = dict(zip(exit_rule_display_options, exit_rule_options_zh.values()))
+    selected_exit_rule_labels = st.multiselect("比較出場規則", exit_rule_display_options, default=exit_rule_display_options, disabled=not backtest_compare_enabled)
+    backtest_exit_rules = [exit_rule_options[label] for label in selected_exit_rule_labels]
+    trailing_stop_pct = st.slider("移動停損幅度", 2.0, 15.0, 5.0, step=0.5, help="移動停損出場規則使用；例如 5% 代表從進場後高點回落 5% 出場。", disabled=not backtest_compare_enabled) / 100
+    backtest_only_buy = st.toggle("回測只吃偏多觀察訊號", value=False, help="關閉時會測試每個決策點的 long-only 結果；開啟時只測 BUY_WATCH。")
+    show_volume = st.toggle("K 線圖顯示成交量", value=True)
+    uploaded = st.file_uploader("上傳 CSV", type=["csv"], help="支援 date/ticker/open/high/low/close/volume 或中文欄位。")
+    st.caption("行情資料已快取 1 小時，並寫入 docker_runtime/market_cache；Docker 重啟後仍會優先讀磁碟快取。需要最新行情時再按下方按鈕。")
+    refresh = st.button("重新抓資料 / 更新分析", type="primary", use_container_width=True)
+    if refresh:
+        _clear_cached_market_data()
+        st.session_state.shap_attribution = pd.DataFrame()
+        st.session_state.shap_signature = None
+        st.session_state.factor_research_report = None
+        st.session_state.factor_signature = None
+        st.toast("已清除行情與分析快取，正在重新抓資料。")
+
+st.title("📈 AI Stock 決策儀表板")
+st.caption("先看決策，再看原因：價格趨勢、技術指標、股票相關性與可解釋的數學預估。此工具只做研究輔助，不自動下單。")
+
+prices = pd.DataFrame()
+tickers = _split_tickers(ticker_text)
+try:
+    if source == "csv" and uploaded is not None:
+        prices = normalize_ohlcv(pd.read_csv(uploaded))
+    elif source == "csv" and uploaded is None:
+        st.info("請在左側上傳 CSV，或把資料來源切回 yfinance。")
+        st.stop()
+    elif tickers:
+        with st.spinner("正在抓取行情並計算指標…"):
+            prices = _load_yf(tickers, period, interval)
+except Exception as exc:
+    st.error(f"資料載入失敗：{exc}")
+    st.stop()
+
+if prices.empty:
+    st.warning("目前沒有價格資料。請輸入可由 yfinance 查詢的代號，或上傳 CSV。")
+    st.stop()
+
+prices = prices.sort_values(["ticker", "date"]).reset_index(drop=True)
+with st.spinner("正在計算決策、回測與可視化資料…"):
+    snapshot = _cached_snapshot(prices)
+    correlations = _cached_correlations(prices)
+    report = _cached_decision_report(prices, horizon)
+    backtest = _cached_backtest(
+        prices,
+        horizon=horizon,
+        lookback=backtest_lookback,
+        only_buy_watch=backtest_only_buy,
+        trailing_stop_pct=trailing_stop_pct,
+    )
+    scenario_comparison = (
+        _cached_scenario_comparison(
+            prices,
+            horizons=tuple(backtest_horizons or [horizon]),
+            exit_rules=tuple(backtest_exit_rules or ["stop_loss"]),
+            lookback=backtest_lookback,
+            only_buy_watch=backtest_only_buy,
+            trailing_stop_pct=trailing_stop_pct,
+        )
+        if backtest_compare_enabled
+        else pd.DataFrame()
+    )
+visible_tickers = sorted(prices["ticker"].unique())
+shap_signature = (
+    tuple(visible_tickers),
+    str(prices["date"].min()),
+    str(prices["date"].max()),
+    int(len(prices)),
+    int(horizon),
+)
+factor_signature = (
+    tuple(visible_tickers),
+    str(prices["date"].min()),
+    str(prices["date"].max()),
+    int(len(prices)),
+    int(factor_window),
+    tuple(int(h) for h in factor_horizons),
+    float(factor_threshold_pct),
+    str(factor_model_type),
+)
+if "shap_attribution" not in st.session_state:
+    st.session_state.shap_attribution = pd.DataFrame()
+if "shap_signature" not in st.session_state:
+    st.session_state.shap_signature = None
+if "factor_research_report" not in st.session_state:
+    st.session_state.factor_research_report = None
+if "factor_signature" not in st.session_state:
+    st.session_state.factor_signature = None
+
+if report.empty:
+    st.warning("資料量不足以產生決策報表；請拉長歷史區間或改用日 K。")
+else:
+    best = report.iloc[0]
+    action = str(best["action"])
+    st.subheader("今天先看這三件事")
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("優先觀察", str(best["ticker"]), ACTION_BADGE.get(action, action))
+    m2.metric("關係調整報酬", _fmt_pct(best.get("relationship_adjusted_return_pct", best["expected_return_pct"])), f"{best['model']}")
+    m3.metric("買進參考", _fmt_price(best["suggested_buy_price"]))
+    m4.metric("停損參考", _fmt_price(best["stop_loss_price"]))
+    m5.metric("賣出參考", _fmt_price(best["suggested_sell_price"]))
+    m6.metric("Kelly 倉位", f"{best['kelly_fraction'] * 100:.1f}%")
+    st.caption(ACTION_HELP.get(action, ""))
+
+    with st.expander("怎麼讀這份報表？", expanded=False):
+        st.write(
+            "參考買進價偏向保守掛價；參考賣出價取近期高點、波動門檻與預估價的較高者；停損價用近期波動估算；"
+            "Kelly 是半 Kelly 且有上限，適合當倉位參考，不是必然下單比例。"
+        )
+
+tab_decision, tab_chart, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "價格圖表", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
+
+with tab_decision:
+    st.subheader("買 / 賣 / 停損決策報表")
+    human_report = _humanize_report(report)
+    if human_report.empty:
+        st.info("目前沒有足夠資料產生報表。")
+    else:
+        st.dataframe(
+            human_report,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "模型預估報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                "關係調整後報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                "Kelly 建議倉位": st.column_config.NumberColumn(format="%.1f%%"),
+                "決策原因": st.column_config.TextColumn(width="large"),
+                "Kelly 原因": st.column_config.TextColumn(width="large"),
+                "最新收盤": st.column_config.NumberColumn(format="%.2f"),
+                "預估價": st.column_config.NumberColumn(format="%.2f"),
+                "參考買進價": st.column_config.NumberColumn(format="%.2f"),
+                "參考賣出價": st.column_config.NumberColumn(format="%.2f"),
+                "參考停損價": st.column_config.NumberColumn(format="%.2f"),
+                "風險單位%": st.column_config.NumberColumn(format="%.2f%%"),
+                "距60日高點%": st.column_config.NumberColumn(format="%.2f%%"),
+                "60日最大回撤%": st.column_config.NumberColumn(format="%.2f%%"),
+                "同/反向關係壓力%": st.column_config.NumberColumn(format="%.2f%%"),
+                "RSI14": st.column_config.NumberColumn(format="%.1f"),
+                "布林位置": st.column_config.NumberColumn(format="%.2f"),
+                "MFI14": st.column_config.NumberColumn(format="%.1f"),
+            },
+        )
+        with st.expander("Kelly / 決策原因怎麼看？", expanded=False):
+            st.write("為什麼 Kelly 可能是 0.0%？當模型預估報酬相對於風險單位太小，或沒有明顯勝率優勢時，半 Kelly 會保守降到 0，代表暫時不建議用這個訊號配置倉位。")
+            st.write("為什麼常看到『等待確認』？當預估報酬仍在買進 / 賣出門檻內，代表模型優勢還沒有大過近期波動與回撤風險，系統會先提示等待確認。")
+            st.write("表格中的『決策原因』與『Kelly 原因』會逐檔列出目前預估報酬、風險門檻與倉位為 0 的主要理由。")
+        st.download_button(
+            "下載決策報表 CSV",
+            human_report.to_csv(index=False).encode("utf-8-sig"),
+            file_name="ai_stock_decision_report.csv",
+            mime="text/csv",
+        )
+
+with tab_chart:
+    left, right = st.columns([1, 2])
+    with left:
+        selected = st.selectbox("選擇圖表代號", visible_tickers)
+        selected_report = report[report["ticker"] == selected]
+        if not selected_report.empty:
+            row = selected_report.iloc[0]
+            st.metric("最新收盤", _fmt_price(row["last_close"]), _fmt_pct(row["expected_return_pct"]))
+            st.write(_("決策：{action}", action=ACTION_BADGE.get(str(row["action"]), row["action"])))
+            st.write(_("參考買進：{price}", price=_fmt_price(row["suggested_buy_price"])))
+            st.write(_("參考賣出：{price}", price=_fmt_price(row["suggested_sell_price"])))
+            st.write(_("參考停損：{price}", price=_fmt_price(row["stop_loss_price"])))
+    with right:
+        one = prices[prices["ticker"] == selected].sort_values("date")
+        st.plotly_chart(_build_price_chart(one, selected, show_volume), use_container_width=True)
+
+with tab_backtest:
+    st.subheader("Walk-forward 回測")
+    st.caption("每隔 horizon 天，只使用當下以前的資料重新產生決策報表，再用下一段行情驗證。這不是實盤成交模擬，先用來檢查策略方向、停損與回撤是否合理。")
+    if backtest.summary.empty:
+        st.info("資料量不足以回測；請把歷史區間拉到 1y / 2y，或降低回測訓練視窗。")
+    else:
+        bt_summary = _humanize_backtest_summary(backtest.summary)
+        top_bt = backtest.summary.iloc[0]
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("最佳累積報酬", _fmt_pct(top_bt.get("cumulative_return", 0) * 100), str(top_bt.get("ticker", "")))
+        b2.metric("勝率", _fmt_pct(top_bt.get("win_rate", 0) * 100))
+        b3.metric("最大回撤", _fmt_pct(top_bt.get("max_drawdown", 0) * 100))
+        b4.metric("停損命中率", _fmt_pct(top_bt.get("stop_loss_hit_rate", 0) * 100))
+
+        st.markdown("#### 持有天數 / 出場規則比較")
+        if not backtest_compare_enabled:
+            st.info("多策略比較目前未啟用。請在左側打開『啟用持有天數 / 出場規則比較』後，選擇要比較的持有天數與出場規則。")
+        elif scenario_comparison.empty:
+            st.info("目前設定下沒有足夠資料產生策略比較。")
+        else:
+            st.plotly_chart(_build_scenario_comparison_chart(scenario_comparison), use_container_width=True)
+            scenario_display = _humanize_backtest_summary(scenario_comparison)
+            st.dataframe(
+                scenario_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "持有天數": st.column_config.NumberColumn(format="%d"),
+                    "交易次數": st.column_config.NumberColumn(format="%d"),
+                    "勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "停損命中率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "時間出場率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "移動停損率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "累積報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                    "最大回撤%": st.column_config.NumberColumn(format="%.2f%%"),
+                    "平均單筆報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Profit Factor": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+            st.download_button(
+                "下載策略比較 CSV",
+                scenario_display.to_csv(index=False).encode("utf-8-sig"),
+                file_name="ai_stock_backtest_scenario_comparison.csv",
+                mime="text/csv",
+            )
+
+        st.markdown("#### 目前決策天數的逐筆回測")
+        st.dataframe(
+            bt_summary,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "交易次數": st.column_config.NumberColumn(format="%d"),
+                "勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                "停損命中率%": st.column_config.NumberColumn(format="%.1f%%"),
+                "累積報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                "最大回撤%": st.column_config.NumberColumn(format="%.2f%%"),
+                "平均單筆報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                "Profit Factor": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+
+        if backtest.equity_curve.empty:
+            st.info("目前設定下沒有產生交易曲線；可關閉『只吃偏多觀察訊號』或拉長資料區間。")
+        else:
+            all_label = _("全部")
+            bt_ticker = st.selectbox("選擇回測曲線代號", [all_label] + visible_tickers, key="bt_ticker")
+            st.plotly_chart(_build_equity_chart(backtest.equity_curve, None if bt_ticker == all_label else bt_ticker), use_container_width=True)
+
+        if not backtest.trades.empty:
+            with st.expander("查看逐筆交易", expanded=False):
+                bt_trades = _humanize_backtest_trades(backtest.trades.tail(200))
+                st.dataframe(
+                    bt_trades,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "進場價": st.column_config.NumberColumn(format="%.2f"),
+                        "出場價": st.column_config.NumberColumn(format="%.2f"),
+                        "單筆報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                        "當時模型預估%": st.column_config.NumberColumn(format="%.2f%%"),
+                        "當時關係調整%": st.column_config.NumberColumn(format="%.2f%%"),
+                        "當時 Kelly%": st.column_config.NumberColumn(format="%.1f%%"),
+                    },
+                )
+                st.download_button(
+                    "下載回測逐筆交易 CSV",
+                    _humanize_backtest_trades(backtest.trades).to_csv(index=False).encode("utf-8-sig"),
+                    file_name="ai_stock_backtest_trades.csv",
+                    mime="text/csv",
+                )
+
+with tab_factor:
+    st.subheader("因子研究：過去 N 天因子 → 未來多 horizon 漲跌")
+    st.caption(
+        "用 sliding window 收集歷史樣本：X 是過去 N 天 K線、KD、MACD、RSI、量能、波動與回撤等因子；"
+        "y 是未來 1/3/5/10 天 forward return 是否高於漲跌門檻。每個 horizon 獨立訓練與歸因；這是模型歸因與統計關聯，不是因果證明。"
+    )
+    st.write(
+        _(
+            "目前設定：過去 {window} 天因子 → 比較未來 {horizons} 天漲跌；上漲門檻 {threshold:.1f}%；模型 {model}。",
+            window=factor_window,
+            horizons=", ".join(str(h) for h in factor_horizons),
+            threshold=factor_threshold_pct,
+            model=factor_model_label,
+        )
+    )
+    current_factor_signature = st.session_state.factor_signature
+    factor_tables = st.session_state.factor_research_report
+    factor_is_current = current_factor_signature == factor_signature and factor_tables is not None
+    run_factor = st.button(
+        "執行多 horizon 因子研究",
+        type="primary",
+        use_container_width=True,
+        help="按下後才針對每個 horizon 建立 sliding-window dataset、訓練分類模型並計算 SHAP/fallback、相關性與分組勝率。",
+    )
+    if run_factor:
+        with st.spinner("正在建立 sliding-window 樣本並訓練多 horizon 因子模型…"):
+            factor_tables = _cached_factor_horizon_comparison(prices, factor_window, tuple(factor_horizons), factor_threshold_pct, factor_model_type)
+        st.session_state.factor_research_report = factor_tables
+        st.session_state.factor_signature = factor_signature
+        factor_is_current = factor_tables is not None
+
+    if factor_tables is None:
+        st.info("尚未執行因子研究。請按『執行多 horizon 因子研究』；建議先用 1y 以上日 K，樣本會比較穩。")
+    elif factor_tables.get("summary", pd.DataFrame()).empty:
+        st.warning("目前資料量或漲跌樣本不足以訓練因子模型；請拉長歷史區間、降低漲跌門檻，或改用日 K。")
+    else:
+        if not factor_is_current:
+            st.warning("目前顯示的是上一次因子研究結果；sidebar 資料或因子參數已改變。若要更新，請再按一次『執行多 horizon 因子研究』。")
+        summary_table = factor_tables["summary"]
+        importance_table = factor_tables["importance"]
+        correlations_table = factor_tables["correlations"]
+        grouped_table = factor_tables["grouped_win_rates"]
+        heatmap_table = factor_tables["y_heatmap"]
+        st.markdown("#### 多 horizon 勝率與 AUC 趨勢")
+        st.plotly_chart(_build_factor_horizon_trend_chart(summary_table), use_container_width=True)
+        trend_display = build_horizon_metric_trends(summary_table).copy()
+        if not trend_display.empty:
+            for col in ["accuracy", "auc", "baseline_up_rate"]:
+                trend_display[col] = trend_display[col] * 100
+            trend_display = trend_display.rename(
+                columns={
+                    "horizon": "預測天數",
+                    "accuracy": "平均測試勝率%",
+                    "auc": "平均 AUC%",
+                    "baseline_up_rate": "平均歷史上漲率%",
+                    "sample_count": "總樣本數",
+                    "ticker_count": "股票數",
+                }
+            )
+            st.dataframe(
+                trend_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "預測天數": st.column_config.NumberColumn(format="%d"),
+                    "平均測試勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "平均 AUC%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "平均歷史上漲率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "總樣本數": st.column_config.NumberColumn(format="%d"),
+                    "股票數": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+        st.markdown("#### 每檔股票 × horizon 表現熱力圖")
+        metric_options = {
+            "測試勝率 / Accuracy": "accuracy",
+            "AUC": "auc",
+            "歷史上漲率 baseline": "baseline_up_rate",
+        }
+        heat_metric_label = st.selectbox("熱力圖指標", list(metric_options), key="factor_ticker_horizon_heatmap_metric")
+        st.plotly_chart(_build_factor_ticker_horizon_heatmap(summary_table, metric_options[heat_metric_label]), use_container_width=True)
+        st.caption("顏色越綠代表該股票在該 horizon 的指標越高；AUC 接近 50% 代表模型排序能力接近隨機。")
+
+        st.markdown("#### 多 horizon 模型表現比較")
+        best_factor = summary_table.sort_values(["accuracy", "auc"], ascending=False).iloc[0]
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric("最佳 horizon", f"{int(best_factor.get('horizon', 0))} 天", str(best_factor.get("ticker", "")))
+        f2.metric("測試準確率", _fmt_pct(best_factor.get("accuracy", 0) * 100))
+        f3.metric("AUC", _fmt_pct(best_factor.get("auc", 0) * 100) if pd.notna(best_factor.get("auc", None)) else "—")
+        f4.metric("歷史上漲率", _fmt_pct(best_factor.get("baseline_up_rate", 0) * 100))
+        factor_summary = _humanize_factor_summary(summary_table)
+        st.dataframe(
+            factor_summary,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "樣本數": st.column_config.NumberColumn(format="%d"),
+                "訓練樣本": st.column_config.NumberColumn(format="%d"),
+                "測試樣本": st.column_config.NumberColumn(format="%d"),
+                "歷史上漲率%": st.column_config.NumberColumn(format="%.1f%%"),
+                "測試準確率%": st.column_config.NumberColumn(format="%.1f%%"),
+                "AUC%": st.column_config.NumberColumn(format="%.1f%%"),
+                "預測天數": st.column_config.NumberColumn(format="%d"),
+                "漲跌門檻%": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+
+        factor_ticker = st.selectbox("選擇因子研究代號", sorted(summary_table["ticker"].unique()), key="factor_ticker")
+        available_horizons = sorted(int(h) for h in summary_table[summary_table["ticker"] == factor_ticker]["horizon"].unique())
+        factor_detail_horizon = st.selectbox("選擇要查看的 horizon", available_horizons, key="factor_detail_horizon")
+        st.markdown("#### 重要因子與相對貢獻")
+        one_importance = importance_table[(importance_table["ticker"] == factor_ticker) & (importance_table["horizon"] == factor_detail_horizon)]
+        if one_importance.empty:
+            st.info("這檔股票 / horizon 沒有可顯示的重要因子。")
+        else:
+            method = str(one_importance["method"].iloc[0])
+            st.write(_("目前歸因方法：{method}", method=method))
+            st.plotly_chart(_build_factor_importance_chart(importance_table[importance_table["horizon"] == factor_detail_horizon], factor_ticker), use_container_width=True)
+            factor_imp_display = one_importance.copy().rename(
+                columns={
+                    "ticker": "代號",
+                    "horizon": "預測天數",
+                    "feature_label": "因子",
+                    "importance": "重要度",
+                    "signed_contribution": "方向貢獻",
+                    "direction": "方向",
+                    "method": "方法",
+                }
+            )
+            st.dataframe(
+                localize_dataframe_for_display(
+                    factor_imp_display,
+                    ["代號", "預測天數", "因子", "重要度", "方向貢獻", "方向", "方法"],
+                    UI_LANG,
+                ),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    t("預測天數", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                    t("重要度", UI_LANG): st.column_config.NumberColumn(format="%.5f"),
+                    t("方向貢獻", UI_LANG): st.column_config.NumberColumn(format="%.5f"),
+                },
+            )
+
+        st.markdown("#### y heat：歷史每個時間點的未來漲跌結果")
+        st.plotly_chart(_build_y_heatmap(heatmap_table[heatmap_table["horizon"] == factor_detail_horizon], factor_ticker), use_container_width=True)
+
+        c_left, c_right = st.columns(2)
+        with c_left:
+            st.markdown("#### 因子相關性")
+            corr_display = correlations_table[(correlations_table["ticker"] == factor_ticker) & (correlations_table["horizon"] == factor_detail_horizon)].copy()
+            if not corr_display.empty:
+                corr_display = corr_display.rename(
+                    columns={
+                        "horizon": "預測天數",
+                        "feature_label": "因子",
+                        "spearman_corr": "Spearman",
+                        "pearson_corr": "Pearson",
+                        "mutual_info": "Mutual Info",
+                    }
+                )
+                st.dataframe(
+                    localize_dataframe_for_display(corr_display, ["預測天數", "因子", "Spearman", "Pearson", "Mutual Info"], UI_LANG),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        t("預測天數", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                        "Spearman": st.column_config.NumberColumn(format="%.4f"),
+                        "Pearson": st.column_config.NumberColumn(format="%.4f"),
+                        "Mutual Info": st.column_config.NumberColumn(format="%.4f"),
+                    },
+                )
+        with c_right:
+            st.markdown("#### 因子分組勝率")
+            group_display = grouped_table[(grouped_table["ticker"] == factor_ticker) & (grouped_table["horizon"] == factor_detail_horizon)].copy()
+            if not group_display.empty:
+                group_display["up_rate"] = group_display["up_rate"] * 100
+                group_display["avg_forward_return"] = group_display["avg_forward_return"] * 100
+                group_display = group_display.rename(
+                    columns={
+                        "horizon": "預測天數",
+                        "feature_label": "因子",
+                        "bucket": "分位組",
+                        "samples": "樣本數",
+                        "up_rate": "上漲率%",
+                        "avg_forward_return": "平均未來報酬%",
+                    }
+                )
+                st.dataframe(
+                    localize_dataframe_for_display(
+                        group_display,
+                        ["預測天數", "因子", "分位組", "樣本數", "上漲率%", "平均未來報酬%"],
+                        UI_LANG,
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        t("預測天數", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                        t("樣本數", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                        t("上漲率%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                        t("平均未來報酬%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                    },
+                )
+        st.download_button(
+            "下載多 horizon 因子重要度 CSV",
+            _humanize_factor_importance(importance_table).to_csv(index=False).encode("utf-8-sig"),
+            file_name="ai_stock_factor_horizon_importance.csv",
+            mime="text/csv",
+        )
+
+with tab_attribution:
+    st.subheader("SHAP / 歸因分析")
+    st.caption("這裡解釋的是技術指標對『未來報酬模型』的正/負向貢獻；按下按鈕才會計算，切換 sidebar 或分頁不會自動重算。")
+    current_attr_signature = st.session_state.shap_signature
+    attribution = st.session_state.shap_attribution
+    attr_is_current = current_attr_signature == shap_signature and not attribution.empty
+
+    run_attr = st.button(
+        "執行 SHAP 歸因分析",
+        type="primary",
+        use_container_width=True,
+        help="只在按下時執行 SHAP / fallback 歸因；結果會保留在目前瀏覽器 session。",
+    )
+    if run_attr:
+        with st.spinner("正在執行 SHAP / 歸因分析…"):
+            attribution = _cached_attribution(prices, horizon)
+        st.session_state.shap_attribution = attribution
+        st.session_state.shap_signature = shap_signature
+        current_attr_signature = shap_signature
+        attr_is_current = not attribution.empty
+
+    if attribution.empty:
+        st.info("尚未執行歸因分析。請按『執行 SHAP 歸因分析』；資料量較大時可能需要數秒到十幾秒。")
+    else:
+        if not attr_is_current:
+            st.warning("目前顯示的是上一次 SHAP 歸因結果；sidebar 資料或決策天數已改變。若要更新，請再按一次『執行 SHAP 歸因分析』。")
+        attr_ticker = st.selectbox("選擇歸因代號", sorted(attribution["ticker"].unique()), key="attr_ticker")
+        one_attr = attribution[attribution["ticker"] == attr_ticker]
+        if one_attr.empty:
+            st.info("這檔股票目前沒有足夠資料產生歸因。")
+        else:
+            method = str(one_attr["method"].iloc[0])
+            st.write(_("目前歸因方法：{method}", method=method))
+            st.plotly_chart(_build_attribution_chart(attribution, attr_ticker), use_container_width=True)
+            display = one_attr.copy()
+            display["contribution_pct_point"] = display["contribution"] * 100
+            display = display.rename(
+                columns={
+                    "feature_label": "指標",
+                    "value": "目前值",
+                    "contribution_pct_point": "歸因百分點",
+                    "direction": "方向",
+                    "method": "方法",
+                }
+            )
+            st.dataframe(
+                localize_dataframe_for_display(display, ["指標", "目前值", "歸因百分點", "方向", "方法"], UI_LANG),
+                use_container_width=True,
+                hide_index=True,
+                column_config={t("歸因百分點", UI_LANG): st.column_config.NumberColumn(format="%.3f%%")},
+            )
+            st.info("解讀：綠色代表模型認為該指標提高未來報酬估計；紅色代表拉低估計。這是統計歸因，不代表單一因果。")
+
+with tab_relation:
+    st.subheader("股票間報酬相關性")
+    if len(visible_tickers) < 2:
+        st.info("至少輸入兩檔股票才會產生相關性分析。")
+    else:
+        st.plotly_chart(_build_corr_heatmap(correlations, visible_tickers), use_container_width=True)
+        st.dataframe(correlations, use_container_width=True, hide_index=True)
+        st.caption("接近 +1 代表同漲同跌程度高；接近 -1 代表反向；接近 0 代表近期關聯較低。決策表中的『同/反向關係壓力』會把這些關係與近5日同業/反向標的表現合併成輔助訊號。")
+
+with tab_raw:
+    st.subheader("技術指標 Snapshot")
+    human_snapshot = _humanize_snapshot(snapshot)
+    st.dataframe(
+        human_snapshot,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "1日報酬": st.column_config.NumberColumn(format="%.2f%%"),
+            "5日報酬": st.column_config.NumberColumn(format="%.2f%%"),
+            "20日報酬": st.column_config.NumberColumn(format="%.2f%%"),
+            "20日年化波動": st.column_config.NumberColumn(format="%.2f%%"),
+            "最新收盤": st.column_config.NumberColumn(format="%.2f"),
+            "SMA20": st.column_config.NumberColumn(format="%.2f"),
+            "SMA60": st.column_config.NumberColumn(format="%.2f"),
+            "EMA20": st.column_config.NumberColumn(format="%.2f"),
+            "EMA60": st.column_config.NumberColumn(format="%.2f"),
+            "RSI14": st.column_config.NumberColumn(format="%.1f"),
+            "MACD 柱": st.column_config.NumberColumn(format="%.3f"),
+            "布林位置": st.column_config.NumberColumn(format="%.2f"),
+            "ATR%": st.column_config.NumberColumn(format="%.2f%%"),
+            "KD-K": st.column_config.NumberColumn(format="%.1f"),
+            "KD-D": st.column_config.NumberColumn(format="%.1f"),
+            "MFI14": st.column_config.NumberColumn(format="%.1f"),
+            "量能比": st.column_config.NumberColumn(format="%.2f"),
+            "距60日高點": st.column_config.NumberColumn(format="%.2f%%"),
+            "60日最大回撤": st.column_config.NumberColumn(format="%.2f%%"),
+            "20日支撐": st.column_config.NumberColumn(format="%.2f"),
+            "20日壓力": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
+    st.subheader("原始標準化價格資料")
+    st.dataframe(prices.tail(500), use_container_width=True, hide_index=True)
+
+st.info("提醒：這是研究與決策輔助，不是投資建議；Futu OpenAPI 實盤/即時串接需可執行 OpenD 的主機或遠端 OpenD。")

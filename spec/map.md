@@ -1,0 +1,22 @@
+# map
+
+- `README.md`：人類讀的入口
+- `spec/tutor_guide.md`：新手導讀；說明 UI 操作流程、技術名詞、Kelly / 等待確認、回測、因子研究與買賣觀察判斷方式
+- `pyproject.toml`：Python dependency / pytest 設定
+- `spec/PROJECT_MAP.md`：專案總覽
+- `spec/agent.md`：agent 快速啟動
+- `spec/project_herness.md`：Hermes 啟動摘要
+- `spec/references/original-engine-notes.md`：原始專案分析摘要
+- `src/ai_stock/universe.py`：股池組合
+- `src/ai_stock/features.py`：舊中文欄位技術特徵
+- `src/ai_stock/selection.py`：選股評分與建議
+- `src/ai_stock/data_sources.py`：OHLCV normalization、yfinance、Futu/OpenD adapter 邊界
+- `src/ai_stock/analytics.py`：技術 snapshot、股票報酬相關性
+- `src/ai_stock/attribution.py`：SHAP TreeExplainer / permutation fallback 歸因分析
+- `src/ai_stock/backtesting.py`：walk-forward 回測統計與 equity curve
+- `src/ai_stock/factor_research.py`：sliding-window 因子研究、多 horizon metrics、ticker × horizon heatmap matrix
+- `src/ai_stock/forecasting.py`：ARIMA / sklearn fallback、Kelly、買賣停損價、Kelly / 決策原因提示
+- `src/ai_stock/pipeline.py`：分析 pipeline
+- `src/ai_stock/app.py`：Streamlit UI；右上角語言切換支援繁中 / English / 日本語 / 한국어
+- `src/ai_stock/i18n.py`：多語言字典與表格欄位翻譯
+- `tests/test_analysis_pipeline.py`：資料 schema、相關性、技術 snapshot、決策報表測試

@@ -1,0 +1,82 @@
+# Python / local environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Local runtime data, caches, and generated outputs
+runtime/
+docker_runtime/
+logs/
+*.log
+*.tmp
+*.cache
+*.pkl
+*.joblib
+*.parquet
+*.sqlite
+*.sqlite3
+*.db
+
+# Streamlit / dashboard local state
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+token*
+*tokens*
+
+# Docker local overrides and build artefacts
+.docker/
+docker-compose.override.yml
+*.tar
+*.tar.gz
+
+# Agent / coding-assistant local traces: do not publish private workflow clues
+.hermes/
+.codex/
+.claude/
+.cursor/
+.windsurf/
+.openai/
+.aider*
+AGENTS.md
+CLAUDE.md
+.codexrc
+codex-*.log
+agent-*.log
+*.session.json
+*.transcript*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large local market/data dumps; keep source code and small docs only
+data/raw/
+data/cache/
+data/downloads/
+exports/
+reports/generated/
