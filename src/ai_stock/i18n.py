@@ -207,6 +207,39 @@ _TRANSLATIONS.update(
 )
 
 
+_TRANSLATIONS.update(
+    {
+        "今日機會雷達": {"en": "Today’s Opportunity Radar", "ja": "本日の機会レーダー", "ko": "오늘의 기회 레이더"},
+        "把決策、Kelly、回測勝率與買賣價位濃縮成卡片；先看顏色與原因，再進表格細查。": {"en": "Condenses decisions, Kelly sizing, backtest win rate, and trading levels into cards. Read the color and reason first, then inspect the table.", "ja": "判断、Kelly、バックテスト勝率、売買水準をカードに集約します。まず色と理由を見てから表を確認してください。", "ko": "결정, Kelly 비중, 백테스트 승률, 매매 가격대를 카드로 요약합니다. 먼저 색상과 이유를 보고 표를 확인하세요."},
+        "調整報酬": {"en": "Adj. return", "ja": "調整後リターン", "ko": "조정 수익률"},
+        "回測勝率": {"en": "Backtest win rate", "ja": "バックテスト勝率", "ko": "백테스트 승률"},
+        "回測報酬": {"en": "Backtest return", "ja": "バックテストリターン", "ko": "백테스트 수익률"},
+        "買進": {"en": "Buy", "ja": "買い", "ko": "매수"},
+        "停損": {"en": "Stop", "ja": "損切り", "ko": "손절"},
+        "策略健檢卡": {"en": "Strategy Health Cards", "ja": "戦略ヘルスチェックカード", "ko": "전략 상태 점검 카드"},
+        "把回測勝率、最大回撤、Profit Factor、樣本數與 Kelly 狀態轉成可讀警訊。": {"en": "Turns backtest win rate, max drawdown, Profit Factor, sample size, and Kelly state into readable warnings.", "ja": "バックテスト勝率、最大ドローダウン、Profit Factor、サンプル数、Kelly 状態を読みやすい警告に変換します。", "ko": "백테스트 승률, 최대 낙폭, Profit Factor, 샘플 수, Kelly 상태를 읽기 쉬운 경고로 바꿉니다."},
+        "樣本數不足": {"en": "Insufficient sample size", "ja": "サンプル不足", "ko": "샘플 수 부족"},
+        "最大回撤偏高": {"en": "High max drawdown", "ja": "最大ドローダウン高め", "ko": "최대 낙폭 높음"},
+        "Profit Factor 低於 1": {"en": "Profit Factor below 1", "ja": "Profit Factor が 1 未満", "ko": "Profit Factor 1 미만"},
+        "勝率偏低": {"en": "Low win rate", "ja": "勝率が低い", "ko": "승률 낮음"},
+        "累積報酬為負": {"en": "Negative cumulative return", "ja": "累積リターンがマイナス", "ko": "누적 수익률 음수"},
+        "策略健檢通過": {"en": "Strategy health passed", "ja": "戦略ヘルスチェック通過", "ko": "전략 점검 통과"},
+        "樣本數不足：{ticker} 目前只有 {trades} 筆回測交易，勝率與報酬只能當方向參考。": {"en": "Insufficient sample size: {ticker} has only {trades} backtest trades, so win rate and return should be directional references only.", "ja": "サンプル不足：{ticker} はバックテスト取引が {trades} 件のみです。勝率とリターンは方向参考に留めてください。", "ko": "샘플 수 부족: {ticker}의 백테스트 거래가 {trades}건뿐이므로 승률과 수익률은 방향 참고로만 보세요."},
+        "最大回撤偏高：{ticker} 最大回撤 {max_drawdown_pct:.1f}%，需要降低倉位、提高停損或改用更保守出場規則。": {"en": "High max drawdown: {ticker} max drawdown is {max_drawdown_pct:.1f}%; reduce position size, tighten stop-loss, or use a more conservative exit rule.", "ja": "最大ドローダウン高め：{ticker} の最大ドローダウンは {max_drawdown_pct:.1f}% です。ポジションを下げる、損切りを強める、より保守的な出口ルールを検討してください。", "ko": "최대 낙폭 높음: {ticker}의 최대 낙폭은 {max_drawdown_pct:.1f}%입니다. 비중을 줄이거나 손절을 강화하거나 더 보수적인 청산 규칙을 쓰세요."},
+        "Profit Factor 低於 1：{ticker} 獲利交易不足以覆蓋虧損交易，暫不適合只靠此策略進場。": {"en": "Profit Factor below 1: {ticker} winning trades do not cover losing trades; this strategy alone is not suitable for entries yet.", "ja": "Profit Factor が 1 未満：{ticker} は利益取引が損失取引を補えていません。この戦略だけでのエントリーはまだ適しません。", "ko": "Profit Factor 1 미만: {ticker}의 이익 거래가 손실 거래를 덮지 못합니다. 아직 이 전략만으로 진입하기는 부적절합니다."},
+        "勝率偏低：{ticker} 回測勝率 {win_rate_pct:.1f}%，需搭配更強確認訊號。": {"en": "Low win rate: {ticker} backtest win rate is {win_rate_pct:.1f}%; stronger confirmation signals are needed.", "ja": "勝率が低い：{ticker} のバックテスト勝率は {win_rate_pct:.1f}% です。より強い確認シグナルが必要です。", "ko": "승률 낮음: {ticker}의 백테스트 승률은 {win_rate_pct:.1f}%입니다. 더 강한 확인 신호가 필요합니다."},
+        "累積報酬為負：{ticker} 在目前參數下累積報酬為 {cumulative_return_pct:.1f}%，代表策略方向暫時不佳。": {"en": "Negative cumulative return: {ticker} cumulative return is {cumulative_return_pct:.1f}% under current parameters, suggesting the strategy direction is currently weak.", "ja": "累積リターンがマイナス：{ticker} は現在パラメータで {cumulative_return_pct:.1f}% です。戦略方向は一時的に弱い可能性があります。", "ko": "누적 수익률 음수: 현재 파라미터에서 {ticker}의 누적 수익률은 {cumulative_return_pct:.1f}%로, 전략 방향이 약함을 시사합니다."},
+        "等待確認：{ticker} Kelly 為 0 且決策為等待確認，代表模型優勢尚未大過近期風險。": {"en": "Wait for confirmation: {ticker} Kelly is 0 and the decision is neutral, meaning the model edge is not larger than recent risk yet.", "ja": "確認待ち：{ticker} は Kelly が 0 で判断も中立です。モデル優位性がまだ直近リスクを上回っていません。", "ko": "확인 대기: {ticker}의 Kelly가 0이고 결정도 중립입니다. 모델 우위가 아직 최근 위험보다 크지 않습니다."},
+        "策略健檢通過：目前回測沒有明顯樣本不足、回撤過高或 Profit Factor 過低警訊。": {"en": "Strategy health passed: no obvious low sample size, excessive drawdown, or weak Profit Factor warning in the current backtest.", "ja": "戦略ヘルスチェック通過：現在のバックテストでは、サンプル不足、過大ドローダウン、Profit Factor 低下の明確な警告はありません。", "ko": "전략 점검 통과: 현재 백테스트에서 샘플 부족, 과도한 낙폭, 낮은 Profit Factor 경고가 뚜렷하지 않습니다."},
+        "參考買進": {"en": "Buy reference", "ja": "買い参考", "ko": "매수 참고"},
+        "參考賣出": {"en": "Sell reference", "ja": "売り参考", "ko": "매도 참고"},
+        "參考停損": {"en": "Stop-loss reference", "ja": "損切り参考", "ko": "손절 참고"},
+        "回測進場 B": {"en": "Backtest entry B", "ja": "バックテスト買い B", "ko": "백테스트 진입 B"},
+        "回測出場 S": {"en": "Backtest exit S", "ja": "バックテスト売り S", "ko": "백테스트 청산 S"},
+    }
+)
+
+
 def normalize_language(value: str | None) -> str:
     if not value:
         return "zh"
@@ -346,3 +379,29 @@ def localize_dataframe_for_display(df: pd.DataFrame, columns: Iterable[str] | No
         out = out[existing]
     out = translate_dataframe_values(out, lang)
     return translate_dataframe_columns(out, lang)
+
+_PHASE2_TRANSLATIONS = {
+    "##### Watchlist": {"en": "##### Watchlist", "ja": "##### ウォッチリスト", "ko": "##### 관심 목록"},
+    "##### Smart Tuning Lite": {"en": "##### Smart Tuning Lite", "ja": "##### Smart Tuning Lite", "ko": "##### Smart Tuning Lite"},
+    "Smart Tuning 持有天數": {"en": "Smart Tuning holding days", "ja": "Smart Tuning 保有日数", "ko": "Smart Tuning 보유 기간"},
+    "Smart Tuning 風險寬度%": {"en": "Smart Tuning risk width %", "ja": "Smart Tuning リスク幅%", "ko": "Smart Tuning 위험 폭%"},
+    "按下 Smart Tuning 按鈕後才會掃描這些持有天數。": {"en": "These holding periods are scanned only after pressing the Smart Tuning button.", "ja": "Smart Tuning ボタンを押した後に、これらの保有日数をスキャンします。", "ko": "Smart Tuning 버튼을 누른 뒤 이 보유 기간을 스캔합니다."},
+    "掃描停損 / 移動停損風險寬度；數值越大越寬鬆。": {"en": "Scan stop-loss / trailing-stop risk widths; larger values are looser.", "ja": "損切り / トレーリングストップのリスク幅をスキャンします。値が大きいほど緩くなります。", "ko": "손절 / 트레일링 스톱 위험 폭을 스캔합니다. 값이 클수록 더 느슨합니다."},
+    "市場熱力圖": {"en": "Market heatmap", "ja": "市場ヒートマップ", "ko": "시장 히트맵"},
+    "用格子大小呈現成交量 × 價格活躍度，用顏色呈現近 5 日報酬；適合快速找出目前最熱或最弱的觀察標的。": {"en": "Tile size shows volume × price activity, while color shows 5-day return; useful for spotting the hottest or weakest watchlist names quickly.", "ja": "タイルサイズは出来高×価格の活発度、色は直近5日リターンを示します。最も強い/弱い監視銘柄を素早く探すのに役立ちます。", "ko": "타일 크기는 거래량 × 가격 활발도를, 색상은 최근 5일 수익률을 나타냅니다. 가장 뜨겁거나 약한 관심 종목을 빠르게 찾는 데 유용합니다."},
+    "5日報酬%": {"en": "5D return %", "ja": "5日リターン%", "ko": "5일 수익률%"},
+    "Smart Tuning Lite": {"en": "Smart Tuning Lite", "ja": "Smart Tuning Lite", "ko": "Smart Tuning Lite"},
+    "掃描持有天數、出場規則與風險寬度，依累積報酬、勝率、Profit Factor、最大回撤與停損率產生綜合分數。": {"en": "Scans holding days, exit rules, and risk widths, then scores them using cumulative return, win rate, Profit Factor, max drawdown, and stop-loss hit rate.", "ja": "保有日数、出口ルール、リスク幅をスキャンし、累積リターン、勝率、Profit Factor、最大ドローダウン、損切り率で総合スコア化します。", "ko": "보유 기간, 청산 규칙, 위험 폭을 스캔한 뒤 누적 수익률, 승률, Profit Factor, 최대 낙폭, 손절 적중률로 종합 점수를 계산합니다."},
+    "執行 Smart Tuning Lite": {"en": "Run Smart Tuning Lite", "ja": "Smart Tuning Lite を実行", "ko": "Smart Tuning Lite 실행"},
+    "按下後才執行參數掃描；會比一般回測多跑數十組情境。": {"en": "Runs the parameter scan only after clicking; it evaluates dozens more scenarios than the normal backtest.", "ja": "クリック後にのみパラメータスキャンを実行します。通常のバックテストより数十件多いシナリオを評価します。", "ko": "클릭한 뒤에만 파라미터 스캔을 실행합니다. 일반 백테스트보다 수십 개 더 많은 시나리오를 평가합니다."},
+    "正在執行 Smart Tuning Lite 參數掃描…": {"en": "Running Smart Tuning Lite parameter scan…", "ja": "Smart Tuning Lite パラメータスキャンを実行中…", "ko": "Smart Tuning Lite 파라미터 스캔 실행 중…"},
+    "尚未執行 Smart Tuning Lite。請按上方按鈕比較持有天數、出場規則與風險寬度。": {"en": "Smart Tuning Lite has not run yet. Press the button above to compare holding days, exit rules, and risk widths.", "ja": "Smart Tuning Lite はまだ実行されていません。上のボタンで保有日数、出口ルール、リスク幅を比較してください。", "ko": "Smart Tuning Lite가 아직 실행되지 않았습니다. 위 버튼을 눌러 보유 기간, 청산 규칙, 위험 폭을 비교하세요."},
+    "目前顯示的是上一次 Smart Tuning 結果；sidebar 資料或參數已改變。若要更新，請再按一次。": {"en": "Showing the previous Smart Tuning result; sidebar data or parameters changed. Press again to update.", "ja": "前回の Smart Tuning 結果を表示しています。sidebar のデータまたはパラメータが変更されました。更新するには再度押してください。", "ko": "이전 Smart Tuning 결과를 표시 중입니다. sidebar 데이터 또는 파라미터가 변경되었습니다. 업데이트하려면 다시 누르세요."},
+    "下載 Smart Tuning CSV": {"en": "Download Smart Tuning CSV", "ja": "Smart Tuning CSV をダウンロード", "ko": "Smart Tuning CSV 다운로드"},
+    "排名": {"en": "Rank", "ja": "順位", "ko": "순위"},
+    "情境": {"en": "Scenario", "ja": "シナリオ", "ko": "시나리오"},
+    "風險寬度%": {"en": "Risk width %", "ja": "リスク幅%", "ko": "위험 폭%"},
+    "綜合分數": {"en": "Composite score", "ja": "総合スコア", "ko": "종합 점수"},
+}
+_TRANSLATIONS.update(_PHASE2_TRANSLATIONS)
+

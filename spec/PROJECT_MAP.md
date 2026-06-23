@@ -4,7 +4,12 @@
 `AI_Stock` 是從 `CH4_CStock_v1_0_5` 提煉出來的新版股票決策輔助專案。
 
 目前定位從「單純選股骨架」擴展為：
-- 歷史價格 / K 線圖表與互動式 UI
+- 歷史價格 / K 線圖表與互動式 UI；K 線可疊加買進 / 賣出 / 停損參考線與回測 B/S marker
+- 今日機會雷達：以卡片快速摘要每檔股票的決策、Kelly、回測勝率與買賣價位
+- 策略健檢卡：將樣本數、最大回撤、Profit Factor、勝率、累積報酬與 Kelly 狀態轉成新手可讀警訊
+- Watchlist + mini sparkline：左側快速顯示各股票最新收盤、1日漲跌、決策狀態與迷你走勢
+- 市場熱力圖：以格子大小呈現活躍度、顏色呈現近 5 日報酬，快速找出強弱標的
+- Smart Tuning Lite：按鈕觸發掃描持有天數、出場規則與風險寬度，依報酬、勝率、Profit Factor、回撤與停損率排名
 - 技術分析 snapshot
 - 多股票報酬相關性分析（stock relationship / shop analysis）
 - 不使用黑箱 AI 的第一版走勢估計：ARIMA 優先、sklearn robust regression fallback
@@ -34,6 +39,7 @@
 - [`task_understandings/2026-06-20_factor_research_tab.md`](./task_understandings/2026-06-20_factor_research_tab.md)：sliding-window 因子研究頁籤與 Docker 驗證紀錄
 - [`task_understandings/2026-06-20_factor_horizon_metric_trends.md`](./task_understandings/2026-06-20_factor_horizon_metric_trends.md)：因子研究多 horizon 勝率 / AUC 趨勢圖紀錄
 - [`task_understandings/2026-06-20_readme_language_split.md`](./task_understandings/2026-06-20_readme_language_split.md)：GitHub README 英文預設入口與繁中指引拆分紀錄
+- [`task_understandings/2026-06-23_phase2_visual_workbench.md`](./task_understandings/2026-06-23_phase2_visual_workbench.md)：Watchlist、Market heatmap、Smart Tuning Lite 第二階段視覺工作台紀錄
 
 ## GitHub 文件入口
 - `README.md`：預設英文 GitHub landing page
@@ -67,6 +73,8 @@
   - ARIMA / sklearn fallback 走勢估計、Kelly sizing、買賣停損參考、回撤風險欄位
 - `src/ai_stock/pipeline.py`
   - 資料 → 技術分析 → 相關性 → 決策報表的程式化 pipeline
+- `src/ai_stock/visual_insights.py`
+  - 今日機會雷達、Watchlist mini sparkline、市場熱力圖、Smart Tuning Lite、策略健檢卡、K 線買進 / 賣出 / 停損參考線與回測 B/S marker 疊圖
 - `src/ai_stock/app.py`
   - Streamlit 互動 UI 與報表下載；yfinance 行情資料快取 1 小時，按「重新抓資料 / 更新分析」才清除記憶體、磁碟行情與下游分析快取；右上角語言選擇可切換繁中 / English / 日本語 / 한국어
 - `src/ai_stock/i18n.py`

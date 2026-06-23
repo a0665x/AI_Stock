@@ -10,6 +10,14 @@ from ai_stock.attribution import build_attribution_report
 from ai_stock.backtesting import compare_backtest_scenarios, run_backtest
 from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_history, normalize_ohlcv
 from ai_stock.forecasting import build_decision_report
+from ai_stock.visual_insights import (
+    build_decision_price_chart,
+    build_market_heatmap_table,
+    build_opportunity_radar,
+    build_smart_tuning_lite,
+    build_strategy_health_cards,
+    build_watchlist_sparklines,
+)
 from ai_stock.i18n import (
     LANGUAGES,
     localize_dataframe_for_display,
@@ -209,6 +217,7 @@ def _clear_cached_market_data() -> None:
     _cached_attribution.clear()
     _cached_backtest.clear()
     _cached_scenario_comparison.clear()
+    _cached_smart_tuning_lite.clear()
     _cached_factor_research.clear()
 
 
@@ -264,6 +273,27 @@ def _cached_scenario_comparison(
         prices,
         horizons=list(horizons),
         exit_rules=list(exit_rules),
+        lookback=lookback,
+        only_buy_watch=only_buy_watch,
+        trailing_stop_pct=trailing_stop_pct,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_smart_tuning_lite(
+    prices: pd.DataFrame,
+    horizons: tuple[int, ...],
+    exit_rules: tuple[str, ...],
+    stop_loss_pcts: tuple[float, ...],
+    lookback: int,
+    only_buy_watch: bool,
+    trailing_stop_pct: float,
+) -> pd.DataFrame:
+    return build_smart_tuning_lite(
+        prices,
+        horizons=horizons,
+        exit_rules=exit_rules,
+        stop_loss_pcts=stop_loss_pcts,
         lookback=lookback,
         only_buy_watch=only_buy_watch,
         trailing_stop_pct=trailing_stop_pct,
@@ -370,6 +400,196 @@ def _humanize_report(report: pd.DataFrame) -> pd.DataFrame:
         "model",
     ]
     return translate_dataframe_columns(out[[c for c in columns if c in out.columns]].rename(columns=rename), UI_LANG)
+
+
+def _render_opportunity_radar(radar: pd.DataFrame) -> None:
+    if radar.empty:
+        return
+    st.subheader("今日機會雷達")
+    st.caption("把決策、Kelly、回測勝率與買賣價位濃縮成卡片；先看顏色與原因，再進表格細查。")
+    color_by_tone = {
+        "bullish": "#dcfce7",
+        "neutral": "#fef9c3",
+        "bearish": "#fee2e2",
+    }
+    border_by_tone = {
+        "bullish": "#16a34a",
+        "neutral": "#eab308",
+        "bearish": "#dc2626",
+    }
+    cols = st.columns(min(3, len(radar)))
+    for idx, row in radar.head(6).iterrows():
+        with cols[idx % len(cols)]:
+            tone = str(row.get("tone", "neutral"))
+            action = ACTION_BADGE.get(str(row.get("action", "")), str(row.get("action", "")))
+            reason = _(str(row.get("reason", "")))
+            if len(reason) > 115:
+                reason = reason[:112] + "…"
+            st.markdown(
+                f"""
+<div style=\"border:1px solid {border_by_tone.get(tone, '#94a3b8')}; background:{color_by_tone.get(tone, '#f8fafc')}; border-radius:14px; padding:14px; min-height:230px; margin-bottom:12px;\">
+  <div style=\"font-size:1.25rem; font-weight:800; color:#0f172a;\">{row.get('ticker', '')}</div>
+  <div style=\"font-size:0.95rem; margin:4px 0 10px 0; color:#334155;\">{action}</div>
+  <div style=\"display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:0.9rem; color:#0f172a;\">
+    <div><b>{_('調整報酬')}</b><br>{_fmt_pct(row.get('adjusted_return_pct'))}</div>
+    <div><b>{_('Kelly')}</b><br>{float(row.get('kelly_pct', 0) or 0):.1f}%</div>
+    <div><b>{_('回測勝率')}</b><br>{_fmt_pct(row.get('win_rate_pct'))}</div>
+    <div><b>{_('回測報酬')}</b><br>{_fmt_pct(row.get('backtest_return_pct'))}</div>
+    <div><b>{_('買進')}</b><br>{_fmt_price(row.get('suggested_buy_price'))}</div>
+    <div><b>{_('停損')}</b><br>{_fmt_price(row.get('stop_loss_price'))}</div>
+  </div>
+  <div style=\"margin-top:10px; font-size:0.82rem; color:#475569; line-height:1.35;\">{reason}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+
+def _render_strategy_health(cards: pd.DataFrame) -> None:
+    if cards.empty:
+        return
+    st.subheader("策略健檢卡")
+    st.caption("把回測勝率、最大回撤、Profit Factor、樣本數與 Kelly 狀態轉成可讀警訊。")
+    icon = {"danger": "🔴", "warning": "🟠", "info": "🔵", "ok": "🟢"}
+    color = {"danger": "#fee2e2", "warning": "#ffedd5", "info": "#dbeafe", "ok": "#dcfce7"}
+    border = {"danger": "#dc2626", "warning": "#f97316", "info": "#2563eb", "ok": "#16a34a"}
+    templates = {
+        "low_sample": "樣本數不足：{ticker} 目前只有 {trades} 筆回測交易，勝率與報酬只能當方向參考。",
+        "high_drawdown": "最大回撤偏高：{ticker} 最大回撤 {max_drawdown_pct:.1f}%，需要降低倉位、提高停損或改用更保守出場規則。",
+        "low_profit_factor": "Profit Factor 低於 1：{ticker} 獲利交易不足以覆蓋虧損交易，暫不適合只靠此策略進場。",
+        "low_win_rate": "勝率偏低：{ticker} 回測勝率 {win_rate_pct:.1f}%，需搭配更強確認訊號。",
+        "negative_return": "累積報酬為負：{ticker} 在目前參數下累積報酬為 {cumulative_return_pct:.1f}%，代表策略方向暫時不佳。",
+        "hold_zero_kelly": "等待確認：{ticker} Kelly 為 0 且決策為等待確認，代表模型優勢尚未大過近期風險。",
+        "health_ok": "策略健檢通過：目前回測沒有明顯樣本不足、回撤過高或 Profit Factor 過低警訊。",
+    }
+    for row_idx, row in cards.head(8).iterrows():
+        sev = str(row.get("severity", "info"))
+        code = str(row.get("code", ""))
+        template = templates.get(code)
+        message = _(template, **row.to_dict()) if template else _(str(row.get("message", "")))
+        title = _(str(row.get("title", "")))
+        st.markdown(
+            f"""
+<div style=\"border-left:5px solid {border.get(sev, '#64748b')}; background:{color.get(sev, '#f8fafc')}; border-radius:10px; padding:10px 12px; margin-bottom:8px;\">
+  <div style=\"font-weight:800; color:#0f172a;\">{icon.get(sev, 'ℹ️')} {row.get('ticker', '')} · {title}</div>
+  <div style=\"color:#475569; font-size:0.92rem; line-height:1.35;\">{message}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+def _sparkline_svg(values: list[float], width: int = 120, height: int = 32) -> str:
+    if not values:
+        return ""
+    clean = [float(v) for v in values if pd.notna(v)]
+    if len(clean) < 2:
+        return ""
+    lo, hi = min(clean), max(clean)
+    span = hi - lo if hi != lo else 1.0
+    points = []
+    for idx, value in enumerate(clean):
+        x = idx / max(len(clean) - 1, 1) * width
+        y = height - ((value - lo) / span * (height - 4) + 2)
+        points.append(f"{x:.1f},{y:.1f}")
+    color = "#16a34a" if clean[-1] >= clean[0] else "#dc2626"
+    return f"<svg viewBox='0 0 {width} {height}' width='{width}' height='{height}'><polyline fill='none' stroke='{color}' stroke-width='2.2' points='{' '.join(points)}'/></svg>"
+
+
+def _render_watchlist(watchlist: pd.DataFrame) -> None:
+    if watchlist.empty:
+        return
+    with st.sidebar:
+        st.markdown("##### Watchlist")
+        for _, row in watchlist.head(10).iterrows():
+            badge = ACTION_BADGE.get(str(row.get("action", "")), "—")
+            st.markdown(
+                f"""
+<div style=\"border:1px solid #e2e8f0; border-radius:10px; padding:8px; margin-bottom:8px; background:#ffffff;\">
+  <div style=\"display:flex; justify-content:space-between; align-items:center; gap:8px;\">
+    <div><b>{row.get('ticker', '')}</b><br><span style=\"font-size:0.78rem;color:#64748b;\">{badge}</span></div>
+    <div style=\"text-align:right;\"><b>{_fmt_price(row.get('last_close'))}</b><br><span style=\"font-size:0.78rem;color:{'#16a34a' if float(row.get('change_1d_pct', 0) or 0) >= 0 else '#dc2626'};\">{_fmt_pct(row.get('change_1d_pct'))}</span></div>
+  </div>
+  <div style=\"margin-top:4px;\">{_sparkline_svg(row.get('sparkline', []))}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+
+def _build_market_heatmap_chart(heatmap: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if heatmap.empty:
+        return fig
+    fig.add_trace(
+        go.Treemap(
+            labels=heatmap["ticker"],
+            parents=[""] * len(heatmap),
+            values=heatmap["size"],
+            text=heatmap["label"],
+            textinfo="text",
+            marker={
+                "colors": heatmap["color_value"],
+                "colorscale": "RdYlGn",
+                "cmid": 0,
+                "colorbar": {"title": _("5日報酬%")},
+            },
+            customdata=heatmap[["return_1d_pct", "return_5d_pct", "signal_score", "action"]],
+            hovertemplate="%{label}<br>1D=%{customdata[0]:+.2f}%<br>5D=%{customdata[1]:+.2f}%<br>Signal=%{customdata[2]:+.2f}<br>%{customdata[3]}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=420, margin={"l": 10, "r": 10, "t": 25, "b": 10})
+    return fig
+
+
+def _humanize_smart_tuning(tuning: pd.DataFrame) -> pd.DataFrame:
+    if tuning.empty:
+        return tuning
+    out = tuning.copy()
+    for col in ["win_rate", "stop_loss_hit_rate", "cumulative_return", "max_drawdown", "avg_trade_return", "stop_loss_pct"]:
+        if col in out.columns:
+            out[col] = out[col] * 100
+    out = translate_dataframe_values(out, UI_LANG)
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "rank": "排名",
+                "ticker": "代號",
+                "scenario": "情境",
+                "holding_days": "持有天數",
+                "exit_rule": "出場規則",
+                "stop_loss_pct": "風險寬度%",
+                "score": "綜合分數",
+                "trades": "交易次數",
+                "win_rate": "勝率%",
+                "stop_loss_hit_rate": "停損命中率%",
+                "cumulative_return": "累積報酬%",
+                "max_drawdown": "最大回撤%",
+                "avg_trade_return": "平均單筆報酬%",
+                "profit_factor": "Profit Factor",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _build_smart_tuning_chart(tuning: pd.DataFrame) -> go.Figure:
+    work = tuning.sort_values("score", ascending=True).tail(20).copy()
+    fig = go.Figure()
+    if work.empty:
+        return fig
+    fig.add_trace(
+        go.Bar(
+            x=work["score"],
+            y=work["scenario"],
+            orientation="h",
+            marker_color=["#16a34a" if v >= 0 else "#dc2626" for v in work["score"]],
+            customdata=work[["win_rate", "cumulative_return", "max_drawdown", "profit_factor"]],
+            hovertemplate="%{y}<br>score=%{x:.2f}<br>win=%{customdata[0]:.1%}<br>return=%{customdata[1]:.2%}<br>drawdown=%{customdata[2]:.2%}<br>PF=%{customdata[3]:.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=520, margin={"l": 10, "r": 10, "t": 20, "b": 10}, xaxis_title=_("綜合分數"))
+    return fig
 
 
 def _humanize_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
@@ -805,6 +1025,9 @@ with st.sidebar:
     selected_exit_rule_labels = st.multiselect("比較出場規則", exit_rule_display_options, default=exit_rule_display_options, disabled=not backtest_compare_enabled)
     backtest_exit_rules = [exit_rule_options[label] for label in selected_exit_rule_labels]
     trailing_stop_pct = st.slider("移動停損幅度", 2.0, 15.0, 5.0, step=0.5, help="移動停損出場規則使用；例如 5% 代表從進場後高點回落 5% 出場。", disabled=not backtest_compare_enabled) / 100
+    st.markdown("##### Smart Tuning Lite")
+    smart_tuning_horizons = st.multiselect("Smart Tuning 持有天數", [3, 5, 10, 20], default=[3, 5, 10], help="按下 Smart Tuning 按鈕後才會掃描這些持有天數。")
+    smart_tuning_stop_widths_pct = st.multiselect("Smart Tuning 風險寬度%", [3, 5, 8, 10], default=[3, 5, 8], help="掃描停損 / 移動停損風險寬度；數值越大越寬鬆。")
     backtest_only_buy = st.toggle("回測只吃偏多觀察訊號", value=False, help="關閉時會測試每個決策點的 long-only 結果；開啟時只測 BUY_WATCH。")
     show_volume = st.toggle("K 線圖顯示成交量", value=True)
     uploaded = st.file_uploader("上傳 CSV", type=["csv"], help="支援 date/ticker/open/high/low/close/volume 或中文欄位。")
@@ -816,6 +1039,8 @@ with st.sidebar:
         st.session_state.shap_signature = None
         st.session_state.factor_research_report = None
         st.session_state.factor_signature = None
+        st.session_state.smart_tuning_result = pd.DataFrame()
+        st.session_state.smart_tuning_signature = None
         st.toast("已清除行情與分析快取，正在重新抓資料。")
 
 st.title("📈 AI Stock 決策儀表板")
@@ -865,6 +1090,9 @@ with st.spinner("正在計算決策、回測與可視化資料…"):
         else pd.DataFrame()
     )
 visible_tickers = sorted(prices["ticker"].unique())
+watchlist = build_watchlist_sparklines(prices, report, lookback=30)
+market_heatmap = build_market_heatmap_table(prices, report)
+_render_watchlist(watchlist)
 shap_signature = (
     tuple(visible_tickers),
     str(prices["date"].min()),
@@ -882,6 +1110,17 @@ factor_signature = (
     float(factor_threshold_pct),
     str(factor_model_type),
 )
+smart_tuning_signature = (
+    tuple(visible_tickers),
+    str(prices["date"].min()),
+    str(prices["date"].max()),
+    int(len(prices)),
+    tuple(int(h) for h in smart_tuning_horizons or [horizon]),
+    tuple(backtest_exit_rules or ["time", "stop_loss", "trailing_stop"]),
+    tuple(float(v) / 100 for v in smart_tuning_stop_widths_pct or [5]),
+    int(backtest_lookback),
+    bool(backtest_only_buy),
+)
 if "shap_attribution" not in st.session_state:
     st.session_state.shap_attribution = pd.DataFrame()
 if "shap_signature" not in st.session_state:
@@ -890,6 +1129,10 @@ if "factor_research_report" not in st.session_state:
     st.session_state.factor_research_report = None
 if "factor_signature" not in st.session_state:
     st.session_state.factor_signature = None
+if "smart_tuning_result" not in st.session_state:
+    st.session_state.smart_tuning_result = pd.DataFrame()
+if "smart_tuning_signature" not in st.session_state:
+    st.session_state.smart_tuning_signature = None
 
 if report.empty:
     st.warning("資料量不足以產生決策報表；請拉長歷史區間或改用日 K。")
@@ -905,6 +1148,10 @@ else:
     m5.metric("賣出參考", _fmt_price(best["suggested_sell_price"]))
     m6.metric("Kelly 倉位", f"{best['kelly_fraction'] * 100:.1f}%")
     st.caption(ACTION_HELP.get(action, ""))
+    _render_opportunity_radar(build_opportunity_radar(report, backtest.summary, top_n=6))
+    st.subheader("市場熱力圖")
+    st.caption("用格子大小呈現成交量 × 價格活躍度，用顏色呈現近 5 日報酬；適合快速找出目前最熱或最弱的觀察標的。")
+    st.plotly_chart(_build_market_heatmap_chart(market_heatmap), use_container_width=True)
 
     with st.expander("怎麼讀這份報表？", expanded=False):
         st.write(
@@ -916,6 +1163,7 @@ tab_decision, tab_chart, tab_backtest, tab_factor, tab_attribution, tab_relation
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
+    _render_strategy_health(build_strategy_health_cards(backtest.summary, report))
     human_report = _humanize_report(report)
     if human_report.empty:
         st.info("目前沒有足夠資料產生報表。")
@@ -969,7 +1217,13 @@ with tab_chart:
             st.write(_("參考停損：{price}", price=_fmt_price(row["stop_loss_price"])))
     with right:
         one = prices[prices["ticker"] == selected].sort_values("date")
-        st.plotly_chart(_build_price_chart(one, selected, show_volume), use_container_width=True)
+        decision_row = selected_report.iloc[0] if not selected_report.empty else None
+        trades_for_chart = backtest.trades if not backtest.trades.empty else None
+        fig = build_decision_price_chart(one, selected, show_volume, decision_row=decision_row, backtest_trades=trades_for_chart)
+        for trace in fig.data:
+            if getattr(trace, "name", None):
+                trace.name = _(str(trace.name))
+        st.plotly_chart(fig, use_container_width=True)
 
 with tab_backtest:
     st.subheader("Walk-forward 回測")
@@ -1014,6 +1268,60 @@ with tab_backtest:
                 "下載策略比較 CSV",
                 scenario_display.to_csv(index=False).encode("utf-8-sig"),
                 file_name="ai_stock_backtest_scenario_comparison.csv",
+                mime="text/csv",
+            )
+
+        st.markdown("#### Smart Tuning Lite")
+        st.caption("掃描持有天數、出場規則與風險寬度，依累積報酬、勝率、Profit Factor、最大回撤與停損率產生綜合分數。")
+        smart_current = st.session_state.smart_tuning_signature == smart_tuning_signature and not st.session_state.smart_tuning_result.empty
+        run_smart = st.button(
+            "執行 Smart Tuning Lite",
+            type="primary",
+            use_container_width=True,
+            help="按下後才執行參數掃描；會比一般回測多跑數十組情境。",
+        )
+        if run_smart:
+            with st.spinner("正在執行 Smart Tuning Lite 參數掃描…"):
+                smart_result = _cached_smart_tuning_lite(
+                    prices,
+                    horizons=tuple(smart_tuning_horizons or [horizon]),
+                    exit_rules=tuple(backtest_exit_rules or ["time", "stop_loss", "trailing_stop"]),
+                    stop_loss_pcts=tuple(float(v) / 100 for v in smart_tuning_stop_widths_pct or [5]),
+                    lookback=backtest_lookback,
+                    only_buy_watch=backtest_only_buy,
+                    trailing_stop_pct=trailing_stop_pct,
+                )
+            st.session_state.smart_tuning_result = smart_result
+            st.session_state.smart_tuning_signature = smart_tuning_signature
+            smart_current = not smart_result.empty
+        smart_result = st.session_state.smart_tuning_result
+        if smart_result.empty:
+            st.info("尚未執行 Smart Tuning Lite。請按上方按鈕比較持有天數、出場規則與風險寬度。")
+        else:
+            if not smart_current:
+                st.warning("目前顯示的是上一次 Smart Tuning 結果；sidebar 資料或參數已改變。若要更新，請再按一次。")
+            st.plotly_chart(_build_smart_tuning_chart(smart_result), use_container_width=True)
+            smart_display = _humanize_smart_tuning(smart_result.head(60))
+            st.dataframe(
+                smart_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    t("排名", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                    t("持有天數", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                    t("風險寬度%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                    t("綜合分數", UI_LANG): st.column_config.NumberColumn(format="%.2f"),
+                    t("勝率%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                    t("停損命中率%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                    t("累積報酬%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                    t("最大回撤%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                    "Profit Factor": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+            st.download_button(
+                "下載 Smart Tuning CSV",
+                _humanize_smart_tuning(smart_result).to_csv(index=False).encode("utf-8-sig"),
+                file_name="ai_stock_smart_tuning_lite.csv",
                 mime="text/csv",
             )
 

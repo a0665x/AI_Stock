@@ -10,7 +10,12 @@ AI_Stock is a multilingual stock research and decision-support dashboard. It doe
 ## What it can do
 
 - Multilingual Web UI: Traditional Chinese, English, Japanese, and Korean from the selector in the upper-right corner.
-- Interactive historical price and candlestick charts.
+- Interactive historical price and candlestick charts with buy/sell/stop-loss reference lines and backtest B/S markers.
+- Opportunity Radar cards that summarize decision state, Kelly sizing, backtest win rate, return, buy level, and stop-loss level for each ticker.
+- Sidebar Watchlist with mini sparklines, latest close, 1-day move, and decision state for each ticker.
+- Market heatmap that uses tile size for activity and color for recent performance, so users can quickly spot hot or weak names.
+- Smart Tuning Lite: button-triggered scan across holding days, exit rules, and risk widths, ranked by a composite score using return, win rate, Profit Factor, drawdown, and stop-loss hit rate.
+- Strategy Health Cards that turn sample size, max drawdown, Profit Factor, win rate, cumulative return, and Kelly state into readable warnings.
 - Technical snapshot: SMA, EMA, RSI, MACD, KD, MFI, ATR, Bollinger position, volume ratio, volatility, drawdown, support, and resistance.
 - Decision report: model expected return, relationship-adjusted return, buy reference, sell reference, stop-loss reference, Kelly position, decision reason, and explanation for Kelly 0.0%.
 - Walk-forward backtest: win rate, maximum drawdown, stop-loss hit rate, cumulative return, individual trades, and comparison across holding periods and exit rules.
@@ -150,6 +155,7 @@ streamlit run src/ai_stock/app.py --server.headless true --server.port 8507 --se
 - attribution.py: SHAP TreeExplainer / permutation-importance fallback.
 - factor_research.py: sliding-window technical-factor dataset, multi-horizon up/down classification, Accuracy/AUC trend, ticker × horizon heatmap, SHAP/fallback importance, correlations, grouped win rates, and y heatmap.
 - pipeline.py: data → analysis → report pipeline.
+- visual_insights.py: Opportunity Radar, Watchlist sparklines, market heatmap, Smart Tuning Lite, Strategy Health Cards, and candlestick decision overlays with backtest B/S markers.
 - app.py: Streamlit UI and multilingual display layer.
 - i18n.py: Traditional Chinese / English / Japanese / Korean UI language pack.
 
