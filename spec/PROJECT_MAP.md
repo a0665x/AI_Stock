@@ -11,6 +11,7 @@
 - 市場熱力圖：以格子大小呈現活躍度、顏色呈現近 5 日報酬，快速找出強弱標的
 - Smart Tuning Lite：按鈕觸發掃描持有天數、出場規則與風險寬度，依報酬、勝率、Profit Factor、回撤與停損率排名
 - 智能交易視覺中心 / Trade Vision Center：整合進階 K 線、市場結構、BOS/ChoCH、支撐壓力 / 供需區、Entry/SL/TP、Risk/Reward box、MTF Matrix、Signal Score 與 AI Trade Narrative
+- 隔日掛單計畫 / Next-Day Order Planner：基於持倉、決策報表與最近日內波動，輸出隔日買進 / 賣出區、戰術停損、硬停損、觸及機率與建議單型；研究輔助，不自動下單
 - 技術分析 snapshot
 - 多股票報酬相關性分析（stock relationship / shop analysis）
 - 不使用黑箱 AI 的第一版走勢估計：ARIMA 優先、sklearn robust regression fallback
@@ -42,6 +43,7 @@
 - [`task_understandings/2026-06-20_readme_language_split.md`](./task_understandings/2026-06-20_readme_language_split.md)：GitHub README 英文預設入口與繁中指引拆分紀錄
 - [`task_understandings/2026-06-23_phase2_visual_workbench.md`](./task_understandings/2026-06-23_phase2_visual_workbench.md)：Watchlist、Market heatmap、Smart Tuning Lite 第二階段視覺工作台紀錄
 - [`task_understandings/2026-06-24_trade_vision_center.md`](./task_understandings/2026-06-24_trade_vision_center.md)：智能交易視覺中心 / Trade Vision Center 紀錄
+- [`task_understandings/2026-06-24_next_day_order_planner.md`](./task_understandings/2026-06-24_next_day_order_planner.md)：隔日掛單計畫 / Next-Day Order Planner 紀錄
 
 ## GitHub 文件入口
 - `README.md`：預設英文 GitHub landing page
@@ -77,6 +79,8 @@
   - 資料 → 技術分析 → 相關性 → 決策報表的程式化 pipeline
 - `src/ai_stock/portfolio.py`
   - 本機私有持倉讀取與停損、停利、加碼限價、減碼 / 出清檢查規劃；支援 `my_stocks.json` 與既有拼字相容檔 `my_sotcks.json`，不會自動下單
+- `src/ai_stock/order_planner.py`
+  - 隔日掛單研究規劃：用持倉、決策報表與最近 20 日日內波動估算可成交買賣區、戰術停損、硬停損、觸及機率與建議單型；不連券商、不自動下單
 - `src/ai_stock/visual_insights.py`
   - 今日機會雷達、Watchlist mini sparkline、市場熱力圖、Smart Tuning Lite、策略健檢卡、K 線買進 / 賣出 / 停損參考線與回測 B/S marker 疊圖
 - `src/ai_stock/trade_vision.py`

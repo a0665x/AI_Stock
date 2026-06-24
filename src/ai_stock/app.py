@@ -11,6 +11,7 @@ from ai_stock.backtesting import compare_backtest_scenarios, run_backtest
 from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_history, normalize_ohlcv
 from ai_stock.forecasting import build_decision_report
 from ai_stock.portfolio import build_portfolio_order_plan, load_local_portfolio, portfolio_tickers, summarize_portfolio
+from ai_stock.order_planner import build_next_day_order_plan
 from ai_stock.visual_insights import (
     build_decision_price_chart,
     build_market_heatmap_table,
@@ -239,6 +240,7 @@ def _clear_cached_market_data() -> None:
     _cached_backtest.clear()
     _cached_scenario_comparison.clear()
     _cached_smart_tuning_lite.clear()
+    _cached_next_day_order_plan.clear()
     _cached_factor_research.clear()
 
 
@@ -319,6 +321,11 @@ def _cached_smart_tuning_lite(
         only_buy_watch=only_buy_watch,
         trailing_stop_pct=trailing_stop_pct,
     )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_next_day_order_plan(prices: pd.DataFrame, decision_report: pd.DataFrame, holdings: pd.DataFrame, lookback: int) -> pd.DataFrame:
+    return build_next_day_order_plan(prices, decision_report, holdings, lookback=lookback)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -576,6 +583,74 @@ def _build_market_heatmap_chart(heatmap: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(height=420, margin={"l": 10, "r": 10, "t": 25, "b": 10})
     return fig
+
+
+def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
+    if plan.empty:
+        return plan
+    out = plan.copy()
+    if "action" in out.columns:
+        out["action"] = out["action"].map(ACTION_LABELS).fillna(out["action"])
+    probability_labels = {
+        "HIGH": "高",
+        "MEDIUM": "中",
+        "LOW_MEDIUM": "低到中",
+        "LOW_STRATEGY_LEVEL": "低，偏策略價",
+    }
+    order_labels = {
+        "BUY_LIMIT": "買進限價單",
+        "ADD_LIMIT": "加碼限價單",
+        "TAKE_PROFIT_LIMIT": "分批停利限價單",
+        "PROTECTIVE_STOP": "保護性停損單",
+        "REDUCE_OR_AVOID": "減碼 / 避開",
+        "NO_ORDER_WAIT": "不掛單，等待確認",
+        "BRACKET_PLAN": "停利 + 停損 OCO 計畫",
+    }
+    for col in ["buy_touch_probability", "sell_touch_probability", "tactical_stop_touch_probability"]:
+        if col in out.columns:
+            out[col] = out[col].map(probability_labels).fillna(out[col])
+    if "suggested_order_type" in out.columns:
+        out["suggested_order_type"] = out["suggested_order_type"].map(order_labels).fillna(out["suggested_order_type"])
+    out["隔日買進區"] = out.apply(lambda row: f"{_fmt_price(row.get('next_day_buy_low'))} - {_fmt_price(row.get('next_day_buy_high'))}", axis=1)
+    out["隔日賣出區"] = out.apply(lambda row: f"{_fmt_price(row.get('next_day_sell_low'))} - {_fmt_price(row.get('next_day_sell_high'))}", axis=1)
+    out = translate_dataframe_values(out, UI_LANG)
+    columns = [
+        "ticker",
+        "quantity",
+        "current_price",
+        "action",
+        "suggested_order_type",
+        "隔日買進區",
+        "隔日賣出區",
+        "tactical_stop_price",
+        "hard_stop_price",
+        "strategy_buy_price",
+        "strategy_take_profit_price",
+        "buy_touch_probability",
+        "sell_touch_probability",
+        "tactical_stop_touch_probability",
+        "median_intraday_range_pct",
+        "p80_intraday_range_pct",
+        "reason",
+    ]
+    rename = {
+        "ticker": "代號",
+        "quantity": "持有數量",
+        "current_price": "目前價格",
+        "action": "模型決策",
+        "suggested_order_type": "建議單型",
+        "tactical_stop_price": "戰術停損",
+        "hard_stop_price": "硬停損",
+        "strategy_buy_price": "策略買進價",
+        "strategy_take_profit_price": "策略停利價",
+        "buy_touch_probability": "買進成交機率",
+        "sell_touch_probability": "賣出成交機率",
+        "tactical_stop_touch_probability": "戰術停損觸及機率",
+        "median_intraday_range_pct": "20日中位日內波動%",
+        "p80_intraday_range_pct": "20日80分位日內波動%",
+        "reason": "原因",
+    }
+    return translate_dataframe_columns(out[[c for c in columns if c in out.columns]].rename(columns=rename), UI_LANG)
 
 
 def _humanize_portfolio_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
@@ -1257,7 +1332,8 @@ with st.spinner("正在計算決策、回測與可視化資料…"):
 visible_tickers = sorted(prices["ticker"].unique())
 portfolio_order_plan = build_portfolio_order_plan(portfolio_load.holdings, report)
 portfolio_summary = summarize_portfolio(portfolio_load.holdings, portfolio_order_plan)
-watchlist = build_watchlist_sparklines(prices, report, lookback=30)
+next_day_order_plan = _cached_next_day_order_plan(prices, report, portfolio_load.holdings, lookback=20)
+watchlist = build_watchlist_sparklines(prices, report)
 market_heatmap = build_market_heatmap_table(prices, report)
 _render_watchlist(watchlist)
 shap_signature = (
@@ -1327,7 +1403,7 @@ else:
             "Kelly 是半 Kelly 且有上限，適合當倉位參考，不是必然下單比例。"
         )
 
-tab_decision, tab_portfolio, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "持倉下單計畫", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
+tab_decision, tab_portfolio, tab_next_day_order, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "持倉下單計畫", "隔日掛單計畫", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
@@ -1416,6 +1492,47 @@ with tab_portfolio:
             "下載持倉下單計畫 CSV",
             plan_display.to_csv(index=False).encode("utf-8-sig"),
             file_name="ai_stock_portfolio_order_plan.csv",
+            mime="text/csv",
+        )
+
+with tab_next_day_order:
+    st.subheader("隔日掛單計畫")
+    st.caption("把策略級買進 / 停利 / 停損價，轉換成更接近隔日可成交波動區間的掛單研究表。這是研究輔助，不自動下單。")
+    if next_day_order_plan.empty:
+        st.info("目前沒有足夠持倉或行情資料產生隔日掛單計畫。請確認 my_stocks.json / my_sotcks.json 與行情資料已載入。")
+    else:
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("可規劃標的", f"{len(next_day_order_plan)}")
+        n2.metric("高/中買進成交機率", f"{int(next_day_order_plan['buy_touch_probability'].isin(['HIGH', 'MEDIUM']).sum())}")
+        n3.metric("高/中賣出成交機率", f"{int(next_day_order_plan['sell_touch_probability'].isin(['HIGH', 'MEDIUM']).sum())}")
+        n4.metric("保護性停損單", f"{int((next_day_order_plan['suggested_order_type'] == 'PROTECTIVE_STOP').sum())}")
+        st.warning("此頁輸出的是隔日限價 / 停損研究計畫，不會連接券商，也不會自動下單。實際掛單前請確認即時報價、盤前盤後價差、流動性與個人風險。")
+        order_display = _humanize_next_day_order_plan(next_day_order_plan)
+        st.dataframe(
+            order_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                t("持有數量", UI_LANG): st.column_config.NumberColumn(format="%.4f"),
+                t("目前價格", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("戰術停損", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("硬停損", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("策略買進價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("策略停利價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("20日中位日內波動%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                t("20日80分位日內波動%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                t("原因", UI_LANG): st.column_config.TextColumn(width="large"),
+            },
+        )
+        with st.expander("如何使用隔日掛單計畫？", expanded=True):
+            st.write("隔日買進區：用最近 20 日日內波動估算，通常比策略級買進價更靠近現價，目標是提高隔日限價單有機會成交的程度。")
+            st.write("隔日賣出區：適合已有持倉時做分批停利觀察；策略停利價仍可作為較長週期目標。")
+            st.write("戰術停損：偏短線的隔日風險線；硬停損是策略失效線。戰術停損較容易觸發，硬停損較保守。")
+            st.write("成交機率：以價位距離現價相對於最近 20 日日內波動分類；高/中代表隔日較可能碰到，低且偏策略價代表可能需要等待多日或深回檔。")
+        st.download_button(
+            "下載隔日掛單計畫 CSV",
+            order_display.to_csv(index=False).encode("utf-8-sig"),
+            file_name="ai_stock_next_day_order_plan.csv",
             mime="text/csv",
         )
 
