@@ -10,6 +10,7 @@ from ai_stock.attribution import build_attribution_report
 from ai_stock.backtesting import compare_backtest_scenarios, run_backtest
 from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_history, normalize_ohlcv
 from ai_stock.forecasting import build_decision_report
+from ai_stock.portfolio import build_portfolio_order_plan, load_local_portfolio, portfolio_tickers, summarize_portfolio
 from ai_stock.visual_insights import (
     build_decision_price_chart,
     build_market_heatmap_table,
@@ -17,6 +18,15 @@ from ai_stock.visual_insights import (
     build_smart_tuning_lite,
     build_strategy_health_cards,
     build_watchlist_sparklines,
+)
+from ai_stock.trade_vision import (
+    build_mtf_matrix,
+    build_trade_narrative,
+    build_trade_plan_from_decision,
+    build_trade_vision_chart,
+    build_trade_zones,
+    compute_trade_signal_score,
+    detect_market_structure,
 )
 from ai_stock.i18n import (
     LANGUAGES,
@@ -195,6 +205,17 @@ ACTION_BADGE_ZH = {
     "SELL_OR_AVOID": "🔴 減碼/避開",
 }
 ACTION_BADGE = translate_mapping(ACTION_BADGE_ZH, UI_LANG)
+ORDER_ACTION_LABELS_ZH = {
+    "REDUCE_OR_EXIT": "減碼 / 出清檢查",
+    "STOP_LOSS_ALERT": "停損警示",
+    "TAKE_PROFIT_ALERT": "停利警示",
+    "ADD_OR_HOLD": "可加碼 / 持有",
+    "WAIT_FOR_BUY_PRICE": "等待買價",
+    "HOLD_WITH_TIGHT_STOP": "持有並收緊停損",
+    "HOLD_WITH_STOP": "持有並掛停損",
+    "REVIEW_MANUALLY": "人工檢查",
+}
+ORDER_ACTION_LABELS = translate_mapping(ORDER_ACTION_LABELS_ZH, UI_LANG)
 YFINANCE_CACHE_TTL_SECONDS = 60 * 60
 
 
@@ -298,6 +319,21 @@ def _cached_smart_tuning_lite(
         only_buy_watch=only_buy_watch,
         trailing_stop_pct=trailing_stop_pct,
     )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_trade_structure(one: pd.DataFrame, swing_window: int, min_break_pct: float) -> dict[str, pd.DataFrame]:
+    return detect_market_structure(one, swing_window=swing_window, min_break_pct=min_break_pct)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_trade_zones(one: pd.DataFrame, structure_result: dict[str, pd.DataFrame], lookback: int) -> pd.DataFrame:
+    return build_trade_zones(one, structure_result, lookback=lookback)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_mtf_matrix(prices: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    return build_mtf_matrix(prices, ticker)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -542,6 +578,62 @@ def _build_market_heatmap_chart(heatmap: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _humanize_portfolio_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
+    if plan.empty:
+        return plan
+    out = plan.copy()
+    if "action" in out.columns:
+        out["action"] = out["action"].map(ACTION_LABELS).fillna(out["action"])
+    if "suggested_order_action" in out.columns:
+        out["suggested_order_action"] = out["suggested_order_action"].map(ORDER_ACTION_LABELS).fillna(out["suggested_order_action"])
+    out = translate_dataframe_values(out, UI_LANG)
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "ticker": "代號",
+                "name_zh": "名稱",
+                "quantity": "持有數量",
+                "market_value": "持倉市值",
+                "portfolio_weight_pct": "持倉權重%",
+                "broker_current_price": "帳戶現價",
+                "last_close": "行情收盤",
+                "price_gap_pct": "帳戶/行情差異%",
+                "cost_price": "成本價",
+                "unrealized_pnl": "未實現損益",
+                "unrealized_pnl_pct": "未實現損益%",
+                "today_pnl": "今日損益",
+                "today_pnl_pct_of_value": "今日損益/市值%",
+                "action": "模型決策",
+                "suggested_order_action": "操作建議",
+                "kelly_pct": "Kelly%",
+                "add_buy_limit_price": "加碼限價參考",
+                "stop_loss_order_price": "停損單參考",
+                "take_profit_order_price": "停利單參考",
+                "relationship_adjusted_return_pct": "關係調整後報酬%",
+                "risk_unit_pct": "風險單位%",
+                "max_drawdown_60d_pct": "60日最大回撤%",
+                "order_note": "操作說明",
+                "action_reason": "決策原因",
+                "kelly_reason": "Kelly 原因",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _render_portfolio_summary(summary: dict) -> None:
+    if not summary or int(summary.get("positions", 0) or 0) <= 0:
+        return
+    st.subheader("我的持倉狀態")
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("持倉檔數", f"{int(summary.get('positions', 0) or 0)}")
+    p2.metric("總市值", _fmt_price(summary.get("total_market_value")))
+    p3.metric("今日損益", _fmt_price(summary.get("total_today_pnl")))
+    p4.metric("最大持倉", str(summary.get("largest_ticker") or "—"), _fmt_pct(summary.get("largest_weight_pct"), 1))
+    alerts = int(summary.get("stop_alerts", 0) or 0) + int(summary.get("take_profit_alerts", 0) or 0) + int(summary.get("reduce_alerts", 0) or 0)
+    p5.metric("風險/停利提醒", f"{alerts}")
+
+
 def _humanize_smart_tuning(tuning: pd.DataFrame) -> pd.DataFrame:
     if tuning.empty:
         return tuning
@@ -590,6 +682,73 @@ def _build_smart_tuning_chart(tuning: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(height=520, margin={"l": 10, "r": 10, "t": 20, "b": 10}, xaxis_title=_("綜合分數"))
     return fig
+
+
+def _humanize_mtf_matrix(mtf: pd.DataFrame) -> pd.DataFrame:
+    if mtf.empty:
+        return mtf
+    return translate_dataframe_columns(
+        mtf.rename(
+            columns={
+                "timeframe": "時間框架",
+                "trend_state": "趨勢狀態",
+                "momentum_score": "動能分數",
+                "volume_score": "量能分數",
+                "volatility_score": "波動分數",
+                "signal_strength": "訊號強度",
+                "description": "說明",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _score_breakdown_frame(score: dict) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"項目": "Trend", "分數": score.get("trend_score")},
+            {"項目": "Momentum", "分數": score.get("momentum_score")},
+            {"項目": "Volume", "分數": score.get("volume_score")},
+            {"項目": "Structure", "分數": score.get("structure_score")},
+            {"項目": "Risk", "分數": score.get("risk_score")},
+            {"項目": "Portfolio", "分數": score.get("portfolio_score")},
+            {"項目": "Composite", "分數": score.get("composite_score")},
+        ]
+    )
+
+
+def _build_score_breakdown_chart(score: dict) -> go.Figure:
+    frame = _score_breakdown_frame(score)
+    fig = go.Figure(
+        go.Bar(
+            x=frame["分數"],
+            y=frame["項目"],
+            orientation="h",
+            marker_color=["#16a34a" if float(v or 0) >= 60 else "#eab308" if float(v or 0) >= 40 else "#dc2626" for v in frame["分數"]],
+            hovertemplate="%{y}: %{x:.1f}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=280, xaxis={"range": [0, 100], "title": _("分數")}, margin={"l": 10, "r": 10, "t": 15, "b": 10})
+    return fig
+
+
+def _render_trade_plan_card(plan: dict, score: dict) -> None:
+    status = str(score.get("status", plan.get("plan_status", "HOLD_WAIT")))
+    st.metric("Current Price", _fmt_price(plan.get("current_price")))
+    st.metric("Composite Score", f"{float(score.get('composite_score', 0) or 0):.0f}/100", status)
+    st.metric("Action Badge", ACTION_BADGE.get(str(plan.get("action", "")), str(plan.get("action", ""))))
+    p1, p2 = st.columns(2)
+    p1.metric("Entry", _fmt_price(plan.get("entry_price")))
+    p2.metric("SL", _fmt_price(plan.get("stop_loss_price")))
+    t1, t2, t3 = st.columns(3)
+    t1.metric("TP1", _fmt_price(plan.get("take_profit_1")))
+    t2.metric("TP2", _fmt_price(plan.get("take_profit_2")))
+    t3.metric("TP3", _fmt_price(plan.get("take_profit_3")))
+    r1, r2 = st.columns(2)
+    r1.metric("RR Ratio", f"{float(plan.get('rr_ratio', 0) or 0):.2f}")
+    r2.metric("Kelly Fraction", f"{float(plan.get('kelly_fraction', 0) or 0) * 100:.1f}%")
+    st.metric("Plan Status", str(plan.get("plan_status", "—")))
+    st.warning("研究輔助，不自動下單。實際下單前請自行確認券商報價、流動性、稅費與個人風險承受度。")
 
 
 def _humanize_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
@@ -980,12 +1139,18 @@ def _humanize_factor_importance(importance: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+portfolio_load = load_local_portfolio(".")
+portfolio_default_tickers = portfolio_tickers(portfolio_load.holdings)
+default_ticker_text = ", ".join(portfolio_default_tickers) if portfolio_default_tickers else "AAPL, MSFT, NVDA"
+
 with st.sidebar:
     st.header("分析設定")
     st.caption("1 選資料 → 2 調參數 → 3 看決策摘要")
 
     source = st.segmented_control("資料來源", ["yfinance", "csv"], default="yfinance")
-    ticker_text = st.text_area("股票代號", "AAPL, MSFT, NVDA", help="可用逗號或換行分隔，例如 AAPL, MSFT, NVDA")
+    ticker_text = st.text_area("股票代號", default_ticker_text, help="可用逗號或換行分隔，例如 AAPL, MSFT, NVDA。有 my_stocks.json / my_sotcks.json 時會自動帶入持倉代號。")
+    if not portfolio_load.holdings.empty:
+        st.success(f"已載入持倉檔：{portfolio_load.source_path}")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1090,6 +1255,8 @@ with st.spinner("正在計算決策、回測與可視化資料…"):
         else pd.DataFrame()
     )
 visible_tickers = sorted(prices["ticker"].unique())
+portfolio_order_plan = build_portfolio_order_plan(portfolio_load.holdings, report)
+portfolio_summary = summarize_portfolio(portfolio_load.holdings, portfolio_order_plan)
 watchlist = build_watchlist_sparklines(prices, report, lookback=30)
 market_heatmap = build_market_heatmap_table(prices, report)
 _render_watchlist(watchlist)
@@ -1148,6 +1315,7 @@ else:
     m5.metric("賣出參考", _fmt_price(best["suggested_sell_price"]))
     m6.metric("Kelly 倉位", f"{best['kelly_fraction'] * 100:.1f}%")
     st.caption(ACTION_HELP.get(action, ""))
+    _render_portfolio_summary(portfolio_summary)
     _render_opportunity_radar(build_opportunity_radar(report, backtest.summary, top_n=6))
     st.subheader("市場熱力圖")
     st.caption("用格子大小呈現成交量 × 價格活躍度，用顏色呈現近 5 日報酬；適合快速找出目前最熱或最弱的觀察標的。")
@@ -1159,7 +1327,7 @@ else:
             "Kelly 是半 Kelly 且有上限，適合當倉位參考，不是必然下單比例。"
         )
 
-tab_decision, tab_chart, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "價格圖表", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
+tab_decision, tab_portfolio, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "持倉下單計畫", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
@@ -1203,6 +1371,54 @@ with tab_decision:
             mime="text/csv",
         )
 
+with tab_portfolio:
+    st.subheader("持倉下單計畫")
+    st.caption("讀取本機 my_stocks.json / my_sotcks.json，將帳戶持倉與模型決策合併，產生停損、停利、加碼限價與減碼檢查清單。本系統不會自動下單。")
+    if portfolio_load.holdings.empty:
+        st.info("目前沒有讀到 my_stocks.json。若要啟用持倉分析，請把帳戶持倉 JSON 放在專案根目錄；此檔案已加入 .gitignore，不應上傳 GitHub。")
+    elif portfolio_order_plan.empty:
+        st.warning("已讀到持倉檔，但目前行情或決策資料不足，尚無法產生下單計畫。")
+    else:
+        if portfolio_load.account_label:
+            st.caption(_("帳戶：{account}", account=portfolio_load.account_label))
+        _render_portfolio_summary(portfolio_summary)
+        st.warning("這裡是下單前的研究輔助清單，不是自動交易訊號；實際下單前請自行確認券商報價、流動性、稅費與個人風險承受度。")
+        plan_display = _humanize_portfolio_order_plan(portfolio_order_plan)
+        st.dataframe(
+            plan_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                t("持有數量", UI_LANG): st.column_config.NumberColumn(format="%.4f"),
+                t("持倉市值", UI_LANG): st.column_config.NumberColumn(format="%.2f"),
+                t("持倉權重%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                t("帳戶現價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("行情收盤", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("帳戶/行情差異%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                t("成本價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("未實現損益", UI_LANG): st.column_config.NumberColumn(format="%.2f"),
+                t("未實現損益%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                t("今日損益", UI_LANG): st.column_config.NumberColumn(format="%.2f"),
+                t("Kelly%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                t("加碼限價參考", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("停損單參考", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("停利單參考", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("關係調整後報酬%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                t("操作說明", UI_LANG): st.column_config.TextColumn(width="large"),
+            },
+        )
+        with st.expander("怎麼把這張表轉成券商操作？", expanded=False):
+            st.write("停損單參考：如果你決定繼續持有，通常先把每檔股票的停損價輸入券商條件單或提醒。不要因為虧損就把停損往下移。")
+            st.write("停利單參考：若現價接近停利價，可以考慮分批賣出或設定限價賣單；若模型仍等待確認，停利優先於追高加碼。")
+            st.write("加碼限價參考：只有在模型偏多、Kelly 有倉位且價格接近買進參考時，才把它當加碼限價；否則先等待。")
+            st.write("減碼 / 出清檢查：代表模型風險報酬偏弱；已有持股時應優先檢查是否降低曝險，而不是新增買單。")
+        st.download_button(
+            "下載持倉下單計畫 CSV",
+            plan_display.to_csv(index=False).encode("utf-8-sig"),
+            file_name="ai_stock_portfolio_order_plan.csv",
+            mime="text/csv",
+        )
+
 with tab_chart:
     left, right = st.columns([1, 2])
     with left:
@@ -1224,6 +1440,73 @@ with tab_chart:
             if getattr(trace, "name", None):
                 trace.name = _(str(trace.name))
         st.plotly_chart(fig, use_container_width=True)
+
+with tab_trade_vision:
+    st.subheader("智能交易視覺中心")
+    st.caption("整合 K 線、市場結構、支撐壓力、交易計畫、MTF 矩陣與綜合分數。此頁是研究輔助，不自動下單。")
+    if not visible_tickers:
+        st.info("目前沒有可分析的股票代號。")
+    else:
+        left_col, mid_col, right_col = st.columns([0.18, 0.57, 0.25])
+        with left_col:
+            trade_ticker = st.selectbox("選擇 ticker", visible_tickers, key="trade_vision_ticker")
+            tv_show_volume = st.toggle("顯示成交量", value=True, key="tv_show_volume")
+            tv_show_structure = st.toggle("顯示 BOS / ChoCH", value=True, key="tv_show_structure")
+            tv_show_zones = st.toggle("顯示支撐壓力區", value=True, key="tv_show_zones")
+            tv_show_plan = st.toggle("顯示 Entry / SL / TP", value=True, key="tv_show_plan")
+            tv_swing_window = st.slider("swing_window", 2, 10, 3, key="tv_swing_window")
+            tv_min_break_pct = st.slider("min_break_pct", 0.1, 2.0, 0.3, step=0.1, key="tv_min_break_pct") / 100
+            lookback_label = st.selectbox("chart lookback bars", ["60", "120", "240", "all"], index=1, key="tv_lookback")
+        one_full = prices[prices["ticker"] == trade_ticker].sort_values("date").copy()
+        if lookback_label != "all":
+            one = one_full.tail(int(lookback_label)).copy()
+        else:
+            one = one_full.copy()
+        decision_match = report[report["ticker"] == trade_ticker] if not report.empty else pd.DataFrame()
+        decision_row = decision_match.iloc[0] if not decision_match.empty else None
+        snapshot_match = snapshot[snapshot["ticker"] == trade_ticker] if not snapshot.empty else pd.DataFrame()
+        snapshot_row = snapshot_match.iloc[0] if not snapshot_match.empty else pd.Series(dtype=object)
+        if one.empty or len(one) < max(tv_swing_window * 2 + 3, 10):
+            st.info("資料不足以建立 Trade Vision Center；請拉長歷史區間或改用日 K。")
+        else:
+            structure_result = _cached_trade_structure(one, tv_swing_window, tv_min_break_pct)
+            zones = _cached_trade_zones(one, structure_result, lookback=min(len(one), 80))
+            mtf_matrix = _cached_mtf_matrix(prices, trade_ticker)
+            current_price = float(one["close"].iloc[-1])
+            if decision_row is not None:
+                trade_plan = build_trade_plan_from_decision(decision_row, current_price)
+            else:
+                trade_plan = build_trade_plan_from_decision(pd.Series({"ticker": trade_ticker, "action": "HOLD_WAIT", "suggested_buy_price": current_price, "stop_loss_price": current_price * 0.97, "suggested_sell_price": current_price * 1.03}), current_price)
+            score = compute_trade_signal_score(snapshot_row, decision_row, structure_result["structure_events"], mtf_matrix)
+            narrative = build_trade_narrative(trade_ticker, trade_plan, score, mtf_matrix, structure_result["structure_events"], zones)
+            with mid_col:
+                fig = build_trade_vision_chart(
+                    one,
+                    trade_ticker,
+                    decision_row=decision_row,
+                    structure=structure_result["structure_events"],
+                    zones=zones,
+                    signal_events=structure_result["swings"],
+                    show_volume=tv_show_volume,
+                    show_structure=tv_show_structure,
+                    show_zones=tv_show_zones,
+                    show_trade_plan=tv_show_plan,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.markdown("#### MTF Matrix")
+                st.dataframe(_humanize_mtf_matrix(mtf_matrix), use_container_width=True, hide_index=True)
+                st.markdown("#### Signal Score breakdown")
+                st.plotly_chart(_build_score_breakdown_chart(score), use_container_width=True)
+            with right_col:
+                st.markdown("#### Trade Plan")
+                _render_trade_plan_card(trade_plan, score)
+                st.markdown("#### AI Trade Narrative")
+                for item in narrative:
+                    st.write(f"• {item}")
+                with st.expander("Market Structure", expanded=False):
+                    st.dataframe(structure_result["structure_events"].tail(20), use_container_width=True, hide_index=True)
+                with st.expander("Trade Zones", expanded=False):
+                    st.dataframe(zones.tail(20), use_container_width=True, hide_index=True)
 
 with tab_backtest:
     st.subheader("Walk-forward 回測")

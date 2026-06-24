@@ -15,6 +15,7 @@ AI_Stock is a multilingual stock research and decision-support dashboard. It doe
 - Sidebar Watchlist with mini sparklines, latest close, 1-day move, and decision state for each ticker.
 - Market heatmap that uses tile size for activity and color for recent performance, so users can quickly spot hot or weak names.
 - Smart Tuning Lite: button-triggered scan across holding days, exit rules, and risk widths, ranked by a composite score using return, win rate, Profit Factor, drawdown, and stop-loss hit rate.
+- Trade Vision Center: advanced candlestick workbench with market structure, BOS/ChoCH, support/resistance and supply/demand zones, Entry/SL/TP, risk/reward box, MTF Matrix, Signal Score, and AI Trade Narrative. It is research support only and never places trades.
 - Strategy Health Cards that turn sample size, max drawdown, Profit Factor, win rate, cumulative return, and Kelly state into readable warnings.
 - Technical snapshot: SMA, EMA, RSI, MACD, KD, MFI, ATR, Bollinger position, volume ratio, volatility, drawdown, support, and resistance.
 - Decision report: model expected return, relationship-adjusted return, buy reference, sell reference, stop-loss reference, Kelly position, decision reason, and explanation for Kelly 0.0%.
@@ -22,6 +23,7 @@ AI_Stock is a multilingual stock research and decision-support dashboard. It doe
 - Factor research: sliding-window samples use past N days of candlestick, KD, MACD, RSI, volume, drawdown, and volatility factors as X, then use future 1/3/5/10-day up/down outcome as y. The report compares Accuracy, AUC, baseline, ticker × horizon heatmap, SHAP/fallback importance, correlations, grouped win rates, and y heatmap.
 - SHAP / fallback attribution: triggered by button, so the dashboard does not recompute expensive attribution on every page load.
 - Multi-stock return-correlation and positive/negative peer-pressure analysis.
+- Local portfolio import from private my_stocks.json / my_sotcks.json: the app pre-fills current holdings, merges them with model decisions, and creates a stop-loss / take-profit / add-limit / reduce-check trade plan. It does not place orders.
 - yfinance / CSV data sources. Docker mode stores yfinance cache under docker_runtime/market_cache.
 - The futu-api Python package is included, but Futu OpenD still needs an external machine or remote OpenD service that can actually run OpenD.
 
@@ -107,11 +109,12 @@ bash run.sh up
 3. Enter ticker symbols, for example AAPL, MSFT, NVDA.
 4. Choose the history period and candlestick interval. Beginners can start with 1y + 1d.
 5. Start with Decision report: buy reference, sell reference, stop-loss reference, Kelly position, and reason for wait-for-confirmation.
-6. Check Price charts to understand the current price location and trend.
+6. Open Trade Vision Center for the integrated advanced chart, market structure, Entry/SL/TP, MTF Matrix, Signal Score, and AI Trade Narrative.
 7. Check Backtest for win rate, maximum drawdown, stop-loss hit rate, and cumulative return.
 8. Check Factor research to compare which 1/3/5/10-day horizon has stronger signal.
-9. When deeper explanation is needed, run Attribution or Factor research from the button-triggered sections.
-10. Use Stock relationships to check whether selected stocks share the same risk exposure.
+9. If my_stocks.json / my_sotcks.json exists locally, open Portfolio order plan to review stop-loss, take-profit, add-limit, and reduce/exit checks for current holdings.
+10. When deeper explanation is needed, run Attribution or Factor research from the button-triggered sections.
+11. Use Stock relationships to check whether selected stocks share the same risk exposure.
 
 For a more detailed beginner explanation, read:
 
@@ -155,6 +158,7 @@ streamlit run src/ai_stock/app.py --server.headless true --server.port 8507 --se
 - attribution.py: SHAP TreeExplainer / permutation-importance fallback.
 - factor_research.py: sliding-window technical-factor dataset, multi-horizon up/down classification, Accuracy/AUC trend, ticker × horizon heatmap, SHAP/fallback importance, correlations, grouped win rates, and y heatmap.
 - pipeline.py: data → analysis → report pipeline.
+- portfolio.py: local private holdings loader plus portfolio stop-loss / take-profit / add-limit / reduce-check planning. It reads my_stocks.json / my_sotcks.json when present and never places orders.
 - visual_insights.py: Opportunity Radar, Watchlist sparklines, market heatmap, Smart Tuning Lite, Strategy Health Cards, and candlestick decision overlays with backtest B/S markers.
 - app.py: Streamlit UI and multilingual display layer.
 - i18n.py: Traditional Chinese / English / Japanese / Korean UI language pack.

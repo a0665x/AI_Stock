@@ -31,6 +31,8 @@ logs/
 .streamlit/credentials.toml
 
 # Secrets and credentials
+my_stocks.json
+my_sotcks.json
 .env
 .env.*
 !.env.example

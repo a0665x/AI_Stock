@@ -18,6 +18,7 @@ services:
       PYTHONUNBUFFERED: "1"
       PYTEST_ADDOPTS: "-o cache_dir=/tmp/pytest_cache"
       AI_STOCK_MARKET_CACHE_DIR: "/app/runtime/market_cache"
+      AI_STOCK_PORTFOLIO_FILE: "/app/runtime/portfolio/my_stocks.json"
     volumes:
       - ./docker_runtime:/app/runtime
     healthcheck:

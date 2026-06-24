@@ -104,6 +104,20 @@ require_docker() {
   fi
 }
 
+sync_portfolio_file() {
+  mkdir -p docker_runtime/portfolio
+  local src=""
+  if [[ -f my_stocks.json ]]; then
+    src="my_stocks.json"
+  elif [[ -f my_sotcks.json ]]; then
+    src="my_sotcks.json"
+  fi
+  if [[ -n "$src" ]]; then
+    cp "$src" docker_runtime/portfolio/my_stocks.json
+    echo "已同步本機持倉檔到 docker_runtime/portfolio/my_stocks.json（不會上傳 GitHub）。"
+  fi
+}
+
 cmd="${1:-help}"
 shift || true
 
@@ -114,6 +128,7 @@ case "$cmd" in
   up)
     require_docker
     mkdir -p docker_runtime
+    sync_portfolio_file
     compose_cmd up -d --build "$@"
     compose_cmd ps
     print_urls
@@ -125,6 +140,7 @@ case "$cmd" in
   down_up|restart)
     require_docker
     mkdir -p docker_runtime
+    sync_portfolio_file
     compose_cmd down
     compose_cmd up -d --build "$@"
     compose_cmd ps
