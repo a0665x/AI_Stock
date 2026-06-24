@@ -108,11 +108,13 @@ bash run.sh up
 3. 輸入股票代號，例如 AAPL, MSFT, NVDA
 4. 選歷史區間與 K 線週期；新手建議先用 1y + 1d
 5. 先看「決策報表」：買進參考、賣出參考、停損參考、Kelly 倉位、等待確認原因
-6. 再看「價格圖表」確認價格位置與趨勢
-7. 看「回測」確認勝率、最大回撤、停損命中率與累積報酬
-8. 看「因子研究」比較 1/3/5/10 天 horizon 哪個比較有訊號
-9. 需要更細原因時，再按「歸因分析」或「因子研究」中的執行按鈕
-10. 用「股票關係」確認多檔股票是否集中在同一類風險
+6. 打開「智能交易視覺中心」查看整合式 Advanced Trading Chart、市場結構、Entry/SL/TP、MTF Matrix、Signal Score 與 AI Trade Narrative。
+7. 再看「價格圖表」確認價格位置與趨勢
+8. 看「回測」確認勝率、最大回撤、停損命中率與累積報酬
+9. 看「因子研究」比較 1/3/5/10 天 horizon 哪個比較有訊號
+10. 如果本機有 my_stocks.json / my_sotcks.json，打開「持倉下單計畫」檢查目前持倉的停損、停利、加碼限價與減碼 / 出清提醒。
+11. 需要更細原因時，再按「歸因分析」或「因子研究」中的執行按鈕
+12. 用「股票關係」確認多檔股票是否集中在同一類風險
 
 更完整的新手說明請讀：
 
@@ -156,7 +158,9 @@ streamlit run src/ai_stock/app.py --server.headless true --server.port 8507 --se
 - attribution.py：SHAP TreeExplainer / permutation importance fallback
 - factor_research.py：sliding-window 技術因子資料集、多 horizon 漲跌分類、Accuracy/AUC 趨勢、ticker × horizon heatmap、SHAP/fallback 重要度、相關係數、分組勝率、y heatmap
 - pipeline.py：資料 → 分析 → 報表 pipeline
+- portfolio.py：本機私有持倉讀取與持倉停損、停利、加碼限價、減碼 / 出清檢查規劃；支援 my_stocks.json / my_sotcks.json，不自動下單
 - visual_insights.py：今日機會雷達、Watchlist mini sparkline、市場熱力圖、Smart Tuning Lite、策略健檢卡、K 線決策線與回測 B/S marker
+- trade_vision.py：智能交易視覺中心核心，包含 swing/BOS/ChoCH 市場結構、支撐壓力與供需區、premium/discount/equilibrium、Entry/SL/TP 交易計畫、MTF Matrix、Signal Score、AI Trade Narrative，以及 Plotly 進階風險報酬 K 線圖
 - app.py：Streamlit UI 與多語言顯示層
 - i18n.py：中 / 英 / 日 / 韓 UI 語言包
 

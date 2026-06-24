@@ -160,6 +160,7 @@ streamlit run src/ai_stock/app.py --server.headless true --server.port 8507 --se
 - pipeline.py: data → analysis → report pipeline.
 - portfolio.py: local private holdings loader plus portfolio stop-loss / take-profit / add-limit / reduce-check planning. It reads my_stocks.json / my_sotcks.json when present and never places orders.
 - visual_insights.py: Opportunity Radar, Watchlist sparklines, market heatmap, Smart Tuning Lite, Strategy Health Cards, and candlestick decision overlays with backtest B/S markers.
+- trade_vision.py: Trade Vision Center engine for swing/BOS/ChoCH market structure, support/resistance and supply/demand zones, premium/discount/equilibrium, Entry/SL/TP trade plans, MTF Matrix, Signal Score, AI Trade Narrative, and advanced Plotly risk/reward candlestick charts.
 - app.py: Streamlit UI and multilingual display layer.
 - i18n.py: Traditional Chinese / English / Japanese / Korean UI language pack.
 
