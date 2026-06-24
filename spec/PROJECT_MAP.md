@@ -11,7 +11,7 @@
 - 市場熱力圖：以格子大小呈現活躍度、顏色呈現近 5 日報酬，快速找出強弱標的
 - Smart Tuning Lite：按鈕觸發掃描持有天數、出場規則與風險寬度，依報酬、勝率、Profit Factor、回撤與停損率排名
 - 智能交易視覺中心 / Trade Vision Center：整合進階 K 線、市場結構、BOS/ChoCH、支撐壓力 / 供需區、Entry/SL/TP、Risk/Reward box、MTF Matrix、Signal Score 與 AI Trade Narrative
-- 隔日掛單計畫 / Next-Day Order Planner：基於持倉、決策報表與最近日內波動，輸出隔日買進 / 賣出區、戰術停損、硬停損、觸及機率與建議單型；研究輔助，不自動下單
+- 隔日掛單計畫 / Next-Day Order Planner：基於持倉、決策報表與最近日內波動，輸出隔日買進 / 賣出區、戰術停損、硬停損、觸及機率與建議單型；整合 15m / 1h / 1d SMC 訊號產生 SMC 信心分數、買進急迫度、賣出急迫度與優先處理熱力表；表格 row 可聯動下方 swing trading 技術圖，顯示 K 線十字游標、布林、RSI、MACD、成交量、K 線型態、smartmoneyconcepts 優先 / 內建 fallback 的 FVG/IFVG、Order Block、Liquidity、Swing High/Low、SFP 假突破、BOS/ChoCH 結構突破與 UKF-style 去噪動能；研究輔助，不自動下單
 - 技術分析 snapshot
 - 多股票報酬相關性分析（stock relationship / shop analysis）
 - 不使用黑箱 AI 的第一版走勢估計：ARIMA 優先、sklearn robust regression fallback
@@ -30,6 +30,7 @@
 - [`map.md`](./map.md)：簡化地圖
 - [`project_herness.md`](./project_herness.md)：Hermes 啟動摘要
 - [`tutor_guide.md`](./tutor_guide.md)：新手導讀；解釋 UI 操作、技術指標、Kelly、回測、因子研究與買賣觀察流程
+- [`next_day_order_planner_spec.md`](./next_day_order_planner_spec.md)：隔日掛單計畫完整 spec；說明可成交價位、SMC 多週期信心分數、優先處理熱力表、row-linked 技術圖與圖例說明
 - [`references/original-engine-notes.md`](./references/original-engine-notes.md)：原始交易引擎可借鏡點
 - [`task_understandings/2026-05-25_ai_stock_bootstrap.md`](./task_understandings/2026-05-25_ai_stock_bootstrap.md)：初始建立紀錄
 - [`task_understandings/2026-06-19_dashboard_analysis_expansion.md`](./task_understandings/2026-06-19_dashboard_analysis_expansion.md)：UI / 分析 / 預測擴展紀錄
@@ -44,6 +45,11 @@
 - [`task_understandings/2026-06-23_phase2_visual_workbench.md`](./task_understandings/2026-06-23_phase2_visual_workbench.md)：Watchlist、Market heatmap、Smart Tuning Lite 第二階段視覺工作台紀錄
 - [`task_understandings/2026-06-24_trade_vision_center.md`](./task_understandings/2026-06-24_trade_vision_center.md)：智能交易視覺中心 / Trade Vision Center 紀錄
 - [`task_understandings/2026-06-24_next_day_order_planner.md`](./task_understandings/2026-06-24_next_day_order_planner.md)：隔日掛單計畫 / Next-Day Order Planner 紀錄
+- [`task_understandings/2026-06-24_neural_ukf_momentum_plan.md`](./task_understandings/2026-06-24_neural_ukf_momentum_plan.md)：LSTM/Transformer + UKF 多時序動能模型 TODO / 架構規劃
+- [`task_understandings/2026-06-24_swing_order_chart_ukf_plan.md`](./task_understandings/2026-06-24_swing_order_chart_ukf_plan.md)：隔日掛單 row 聯動 swing trading 技術圖、K 線型態與 UKF-style 動能測試補強
+- [`task_understandings/2026-06-24_swing_smc_signal_overlays.md`](./task_understandings/2026-06-24_swing_smc_signal_overlays.md)：隔日掛單技術圖新增 FVG/IFVG、Swing High/Low、SFP、BOS/ChoCH 與市場結構 overlay
+- [`task_understandings/2026-06-24_smartmoneyconcepts_adapter.md`](./task_understandings/2026-06-24_smartmoneyconcepts_adapter.md)：smartmoneyconcepts adapter；隔日掛單技術圖優先使用第三方 SMC engine 計算 FVG、Order Block、Liquidity、Swing、BOS/ChoCH，失敗時 fallback 內建規則
+- [`task_understandings/2026-06-24_smc_confidence_mtf_order_urgency.md`](./task_understandings/2026-06-24_smc_confidence_mtf_order_urgency.md)：隔日掛單計畫加入 15m / 1h / 1d SMC 信心分數、買賣急迫度與優先處理熱力表
 
 ## GitHub 文件入口
 - `README.md`：預設英文 GitHub landing page
@@ -80,7 +86,11 @@
 - `src/ai_stock/portfolio.py`
   - 本機私有持倉讀取與停損、停利、加碼限價、減碼 / 出清檢查規劃；支援 `my_stocks.json` 與既有拼字相容檔 `my_sotcks.json`，不會自動下單
 - `src/ai_stock/order_planner.py`
-  - 隔日掛單研究規劃：用持倉、決策報表與最近 20 日日內波動估算可成交買賣區、戰術停損、硬停損、觸及機率與建議單型；不連券商、不自動下單
+  - 隔日掛單研究規劃：用持倉、決策報表與最近 20 日日內波動估算可成交買賣區、戰術停損、硬停損、觸及機率與建議單型；同時整合 15m / 1h / 1d SMC 訊號，輸出 SMC 信心分數、買進急迫度、賣出急迫度與優先處理分數；優先處理熱力表以 pandas Styler / `st.dataframe` 渲染避免 HTML row 原始碼外露；不連券商、不自動下單
+- `src/ai_stock/swing_order_chart.py`
+  - 隔日掛單計畫下方 row 聯動技術圖：K 線、布林、RSI、MACD、成交量、K 線型態、FVG/IFVG 失衡區、Order Block、Liquidity、Swing High/Low、SFP 假突破、BOS/ChoCH、市場結構、掛單區、戰術/硬停損與 UKF-style 去噪動能
+- `src/ai_stock/smc_adapter.py`
+  - smartmoneyconcepts optional adapter；統一第三方 FVG、Order Block、Liquidity、Swing、BOS/CHoCH 輸出 schema，套件不可用或資料不足時 fallback 到內建市場結構 engine
 - `src/ai_stock/visual_insights.py`
   - 今日機會雷達、Watchlist mini sparkline、市場熱力圖、Smart Tuning Lite、策略健檢卡、K 線買進 / 賣出 / 停損參考線與回測 B/S marker 疊圖
 - `src/ai_stock/trade_vision.py`

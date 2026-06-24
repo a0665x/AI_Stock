@@ -20,6 +20,7 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY tests ./tests
+COPY spec ./spec
 
 RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install -e '.[dev,futu]'

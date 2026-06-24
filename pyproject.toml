@@ -12,6 +12,7 @@ dependencies = [
   "scikit-learn>=1.3",
   "statsmodels>=0.14",
   "shap>=0.45",
+  "smartmoneyconcepts>=0.0.27",
 ]
 
 [project.optional-dependencies]

@@ -16,7 +16,7 @@ AI_Stock is a multilingual stock research and decision-support dashboard. It doe
 - Market heatmap that uses tile size for activity and color for recent performance, so users can quickly spot hot or weak names.
 - Smart Tuning Lite: button-triggered scan across holding days, exit rules, and risk widths, ranked by a composite score using return, win rate, Profit Factor, drawdown, and stop-loss hit rate.
 - Trade Vision Center: advanced candlestick workbench with market structure, BOS/ChoCH, support/resistance and supply/demand zones, Entry/SL/TP, risk/reward box, MTF Matrix, Signal Score, and AI Trade Narrative. It is research support only and never places trades.
-- Next-Day Order Planner: converts strategy-level buy/sell/stop references into more reachable next-session buy/sell ranges, tactical stop, hard stop, and touch-probability labels for current holdings. It is research support only and never places orders.
+- Next-Day Order Planner: converts strategy-level buy/sell/stop references into more reachable next-session buy/sell ranges, tactical stop, hard stop, and touch-probability labels for current holdings. It integrates 15m / 1h / 1d SMC signals into SMC confidence, buy urgency, sell urgency, and a green/red/blue priority heatmap rendered with pandas Styler / Streamlit dataframe (so raw `<tr>` / `<td>` table source cannot leak into the UI), then links each row to a swing trading technical chart with candlesticks, Bollinger Bands, RSI, MACD, volume, candlestick-pattern markers, order zones, smartmoneyconcepts-first SMC overlays for FVG/IFVG, Order Blocks, Liquidity, Swing High/Low, BOS/ChoCH, fallback internal rules, icon-prefixed legend glossary, and UKF-style denoised momentum. It is research support only and never places orders.
 - Strategy Health Cards that turn sample size, max drawdown, Profit Factor, win rate, cumulative return, and Kelly state into readable warnings.
 - Technical snapshot: SMA, EMA, RSI, MACD, KD, MFI, ATR, Bollinger position, volume ratio, volatility, drawdown, support, and resistance.
 - Decision report: model expected return, relationship-adjusted return, buy reference, sell reference, stop-loss reference, Kelly position, decision reason, and explanation for Kelly 0.0%.
@@ -112,7 +112,7 @@ bash run.sh up
 5. Start with Decision report: buy reference, sell reference, stop-loss reference, Kelly position, and reason for wait-for-confirmation.
 6. Open Trade Vision Center for the integrated advanced chart, market structure, Entry/SL/TP, MTF Matrix, Signal Score, and AI Trade Narrative.
 7. If my_stocks.json / my_sotcks.json exists locally, open Portfolio order plan to review stop-loss, take-profit, add-limit, and reduce/exit checks for current holdings.
-8. Open Next-Day Order Planner to review next-session buy/sell ranges, tactical stop, hard stop, and whether the suggested levels are likely to be touched by normal daily volatility.
+8. Open Next-Day Order Planner to review next-session buy/sell ranges, tactical stop, hard stop, touch probability, and the row-linked swing trading chart with Bollinger/RSI/MACD/volume/candlestick-pattern/UKF momentum context.
 9. Check Backtest for win rate, maximum drawdown, stop-loss hit rate, and cumulative return.
 10. Check Factor research to compare which 1/3/5/10-day horizon has stronger signal.
 11. When deeper explanation is needed, run Attribution or Factor research from the button-triggered sections.
@@ -161,7 +161,9 @@ streamlit run src/ai_stock/app.py --server.headless true --server.port 8507 --se
 - factor_research.py: sliding-window technical-factor dataset, multi-horizon up/down classification, Accuracy/AUC trend, ticker × horizon heatmap, SHAP/fallback importance, correlations, grouped win rates, and y heatmap.
 - pipeline.py: data → analysis → report pipeline.
 - portfolio.py: local private holdings loader plus portfolio stop-loss / take-profit / add-limit / reduce-check planning. It reads my_stocks.json / my_sotcks.json when present and never places orders.
-- order_planner.py: next-day order research planner; estimates reachable buy/sell ranges, tactical stop, hard stop, touch probability, and suggested order type from holdings, OHLCV volatility, and the decision report.
+- order_planner.py: next-day order research planner; estimates reachable buy/sell ranges, tactical stop, hard stop, touch probability, suggested order type, 15m/1h/1d SMC confidence, urgency, and priority score from holdings, OHLCV volatility, and the decision report.
+- swing_order_chart.py: row-linked swing trading chart for the Next-Day Order Planner; renders candlesticks, Bollinger Bands, RSI, MACD, volume, candlestick-pattern markers, order zones, FVG/IFVG, Order Blocks, Liquidity, Swing/SFP/BOS/ChoCH overlays, icon-prefixed glossary, and UKF-style denoised momentum.
+- smc_adapter.py: optional smartmoneyconcepts adapter with internal fallback for FVG, Order Blocks, Liquidity, Swing, and BOS/ChoCH.
 - visual_insights.py: Opportunity Radar, Watchlist sparklines, market heatmap, Smart Tuning Lite, Strategy Health Cards, and candlestick decision overlays with backtest B/S markers.
 - trade_vision.py: Trade Vision Center engine for swing/BOS/ChoCH market structure, support/resistance and supply/demand zones, premium/discount/equilibrium, Entry/SL/TP trade plans, MTF Matrix, Signal Score, AI Trade Narrative, and advanced Plotly risk/reward candlestick charts.
 - app.py: Streamlit UI and multilingual display layer.

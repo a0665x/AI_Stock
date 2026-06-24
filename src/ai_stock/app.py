@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import html
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
-
 from ai_stock.analytics import add_indicators, compute_correlation_table, compute_latest_technical_snapshot
 from ai_stock.attribution import build_attribution_report
 from ai_stock.backtesting import compare_backtest_scenarios, run_backtest
 from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_history, normalize_ohlcv
 from ai_stock.forecasting import build_decision_report
 from ai_stock.portfolio import build_portfolio_order_plan, load_local_portfolio, portfolio_tickers, summarize_portfolio
-from ai_stock.order_planner import build_next_day_order_plan
+from ai_stock.order_planner import augment_order_plan_with_smc, build_next_day_order_plan, build_smc_timeframe_signals
+from ai_stock.swing_order_chart import build_swing_order_technical_chart, summarize_swing_order_technical_context
 from ai_stock.visual_insights import (
     build_decision_price_chart,
     build_market_heatmap_table,
@@ -328,6 +330,26 @@ def _cached_next_day_order_plan(prices: pd.DataFrame, decision_report: pd.DataFr
     return build_next_day_order_plan(prices, decision_report, holdings, lookback=lookback)
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_smc_multitimeframe_signals(tickers: tuple[str, ...], daily_prices: pd.DataFrame, enable_intraday: bool = True) -> pd.DataFrame:
+    frames: dict[str, pd.DataFrame] = {"1d": daily_prices[daily_prices["ticker"].astype(str).str.upper().isin(tickers)].copy() if not daily_prices.empty else pd.DataFrame()}
+    if enable_intraday and tickers:
+        try:
+            frames["15m"] = load_history(DataRequest(tickers=tickers, period="5d", interval="15m", provider="yfinance"))
+        except Exception:
+            frames["15m"] = pd.DataFrame()
+        try:
+            frames["1h"] = load_history(DataRequest(tickers=tickers, period="60d", interval="1h", provider="yfinance"))
+        except Exception:
+            frames["1h"] = pd.DataFrame()
+    return build_smc_timeframe_signals(frames)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_order_technical_context(one: pd.DataFrame, order_row: pd.Series | None) -> dict:
+    return summarize_swing_order_technical_context(one, order_row)
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def _cached_trade_structure(one: pd.DataFrame, swing_window: int, min_break_pct: float) -> dict[str, pd.DataFrame]:
     return detect_market_structure(one, swing_window=swing_window, min_break_pct=min_break_pct)
@@ -389,6 +411,14 @@ def _fmt_pct(value: float | int | None, digits: int = 2) -> str:
     if value is None or pd.isna(value):
         return "—"
     return f"{float(value):+.{digits}f}%"
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return out if pd.notna(out) else default
 
 
 def _humanize_report(report: pd.DataFrame) -> pd.DataFrame:
@@ -601,7 +631,9 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         "BUY_LIMIT": "買進限價單",
         "ADD_LIMIT": "加碼限價單",
         "TAKE_PROFIT_LIMIT": "分批停利限價單",
+        "REBOUND_REDUCE_LIMIT": "反彈減碼限價單",
         "PROTECTIVE_STOP": "保護性停損單",
+        "PROTECT_PROFIT_STOP": "獲利保護停損單",
         "REDUCE_OR_AVOID": "減碼 / 避開",
         "NO_ORDER_WAIT": "不掛單，等待確認",
         "BRACKET_PLAN": "停利 + 停損 OCO 計畫",
@@ -620,6 +652,12 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         "current_price",
         "action",
         "suggested_order_type",
+        "priority_score",
+        "buy_urgency_score",
+        "sell_urgency_score",
+        "smc_confidence_score",
+        "smc_bias",
+        "smc_timeframe_summary",
         "隔日買進區",
         "隔日賣出區",
         "tactical_stop_price",
@@ -639,6 +677,12 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         "current_price": "目前價格",
         "action": "模型決策",
         "suggested_order_type": "建議單型",
+        "priority_score": "優先處理分數",
+        "buy_urgency_score": "買進急迫度",
+        "sell_urgency_score": "賣出急迫度",
+        "smc_confidence_score": "SMC信心分數",
+        "smc_bias": "SMC方向",
+        "smc_timeframe_summary": "SMC多週期摘要",
         "tactical_stop_price": "戰術停損",
         "hard_stop_price": "硬停損",
         "strategy_buy_price": "策略買進價",
@@ -651,6 +695,92 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         "reason": "原因",
     }
     return translate_dataframe_columns(out[[c for c in columns if c in out.columns]].rename(columns=rename), UI_LANG)
+
+
+def _urgency_alpha(score: float) -> float:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        value = 0.0
+    return max(0.08, min(0.92, value / 100.0))
+
+
+def _render_next_day_order_heatmap(plan: pd.DataFrame) -> None:
+    """Render a styled priority table without raw HTML rows leaking to Markdown.
+
+    Earlier versions used a hand-written HTML table string. Some Streamlit
+    frontends / Markdown render paths can show raw table-row fragments as source
+    text, which is confusing in a decision dashboard.  A pandas Styler keeps the
+    heat-map semantics while letting Streamlit own the table renderer.
+    """
+    if plan.empty:
+        return
+    top = plan.sort_values("priority_score", ascending=False).head(10).copy()
+    display = pd.DataFrame(
+        {
+            "標的": top.get("ticker", pd.Series(dtype=str)).astype(str),
+            "建議單型": top.get("suggested_order_type", pd.Series(dtype=str)).astype(str),
+            "買進急迫度": top.get("buy_urgency_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
+            "買進區": top.apply(lambda row: f"{_fmt_price(row.get('next_day_buy_low'))} - {_fmt_price(row.get('next_day_buy_high'))}", axis=1),
+            "賣出急迫度": top.get("sell_urgency_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
+            "賣出區": top.apply(lambda row: f"{_fmt_price(row.get('next_day_sell_low'))} - {_fmt_price(row.get('next_day_sell_high'))}", axis=1),
+            "優先分數": top.get("priority_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
+            "SMC方向": top.get("smc_bias", pd.Series(dtype=str)).astype(str),
+        }
+    )
+    display["處理方向"] = display.apply(
+        lambda row: "買進 / 加碼" if int(row["買進急迫度"]) >= int(row["賣出急迫度"]) else "賣出 / 減碼 / 保護",
+        axis=1,
+    )
+
+    def urgency_style(value: object, color: str) -> str:
+        score = _safe_float(value, 0.0)
+        alpha = _urgency_alpha(score)
+        if color == "green":
+            return f"background-color: rgba(22, 163, 74, {alpha:.2f}); color: #052e16; font-weight: 800;"
+        return f"background-color: rgba(220, 38, 38, {alpha:.2f}); color: #450a0a; font-weight: 800;"
+
+    def priority_style(value: object) -> str:
+        score = _safe_float(value, 0.0)
+        alpha = max(0.08, min(0.75, score / 100.0))
+        return f"background-color: rgba(37, 99, 235, {alpha:.2f}); color: #0f172a; font-weight: 800;"
+
+    styled = (
+        display.style
+        .map(lambda value: urgency_style(value, "green"), subset=["買進急迫度"])
+        .map(lambda value: urgency_style(value, "red"), subset=["賣出急迫度"])
+        .map(priority_style, subset=["優先分數"])
+        .set_properties(subset=["標的", "建議單型", "買進區", "賣出區", "SMC方向", "處理方向"], **{"font-weight": "600"})
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+_INDICATOR_GLOSSARY = [
+    ("🕯️", "K線", "每根 K 棒顯示開高低收；搭配十字游標看隔日掛單區是否靠近轉折棒。"),
+    ("━━", "SMA20 / SMA60", "短中期均線；SMA20 在 SMA60 上且價格回踩不破，偏波段多頭。"),
+    ("〰️", "Bollinger", "布林通道；買進區靠近下緣且動能止跌通常比追上緣更適合限價買。"),
+    ("⚡", "RSI14", "動能強弱；30 附近偏超賣，70 附近偏過熱，40-55 回升常用於 swing 回踩確認。"),
+    ("▮▮", "MACD / MACD Hist", "趨勢動能；柱體由負轉正或負值收斂代表賣壓可能減弱。"),
+    ("▥", "成交量 / Volume Ratio", "量能確認；突破或吞噬 K 搭配放量，訊號可信度較高。"),
+    ("◇", "UKF Momentum", "多指標去噪動能；高於 20 偏多，低於 -20 偏弱，中間代表雜訊較多。"),
+    ("▧", "FVG / IFVG", "公平價值缺口與失效後反轉缺口；買進區靠近 bullish FVG 較有回補依據，IFVG 常作反壓/支撐角色反轉。"),
+    ("▣", "SMC Order Block", "smartmoneyconcepts 推導的訂單塊；隔日買/賣區與 OB 重疊可提高技術理由。"),
+    ("●", "SMC Liquidity", "流動性高低點；掃過前高/前低後收回，常對應假突破或反向機會。"),
+    ("▲▼", "Swing High / Low", "擺動高低點；用來判斷結構與掛單區是否靠近關鍵支撐壓力。"),
+    ("✚", "BOS / ChoCH", "結構突破 / 結構轉換；BOS 看延續，ChoCH 看可能轉向。"),
+    ("◆", "SFP", "Swing Failure Pattern，掃停損假突破後收回，常用於避免追高殺低。"),
+]
+
+
+def _render_indicator_glossary() -> None:
+    with st.expander("圖例名詞說明 / Legend glossary", expanded=False):
+        st.caption("前方符號用來快速對應圖中的線條、區塊或 marker；Plotly legend 文字本身不支援自訂 hover tooltip，因此以此說明表補足。")
+        for icon, name, desc in _INDICATOR_GLOSSARY:
+            st.markdown(
+                f"<span style='display:inline-block;min-width:2.1rem;text-align:center;font-weight:800'>{html.escape(icon)}</span> "
+                f"<b>{html.escape(name)}</b>：{html.escape(desc)}",
+                unsafe_allow_html=True,
+            )
 
 
 def _humanize_portfolio_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
@@ -1499,31 +1629,107 @@ with tab_next_day_order:
     st.subheader("隔日掛單計畫")
     st.caption("把策略級買進 / 停利 / 停損價，轉換成更接近隔日可成交波動區間的掛單研究表。這是研究輔助，不自動下單。")
     if next_day_order_plan.empty:
-        st.info("目前沒有足夠持倉或行情資料產生隔日掛單計畫。請確認 my_stocks.json / my_sotcks.json 與行情資料已載入。")
+        st.info("目前沒有持倉資料或可規劃標的。請確認 runtime/portfolio/my_stocks.json 或 my_sotcks.json 是否存在。")
     else:
+        enable_intraday_smc = st.checkbox(
+            "啟用 15m / 1h / 1d SMC 多週期信心分數（首次載入較慢）",
+            value=False,
+            help="關閉時使用 1d SMC 快速規劃；開啟後會額外抓 15m / 1h yfinance K 線並整合 smartmoneyconcepts 訊號。",
+        )
+        smc_order_tickers = tuple(next_day_order_plan["ticker"].dropna().astype(str).str.upper().unique())
+        if enable_intraday_smc:
+            with st.spinner("正在整合 15m / 1h / 1d SMC 多週期訊號…"):
+                smc_mtf_signals = _cached_smc_multitimeframe_signals(smc_order_tickers, prices, enable_intraday=True)
+        else:
+            smc_mtf_signals = _cached_smc_multitimeframe_signals(smc_order_tickers, prices, enable_intraday=False)
+        next_day_order_plan = augment_order_plan_with_smc(next_day_order_plan, smc_mtf_signals)
+        if enable_intraday_smc:
+            st.caption("SMC 信心分數目前整合 15m / 1h / 1d；資料來源為 yfinance OHLCV + smartmoneyconcepts/fallback SMC engine。")
+        else:
+            st.caption("目前使用 1d SMC 快速模式；需要更細的 15m / 1h 掛單方向確認時，可勾選上方多週期 SMC。")
         n1, n2, n3, n4 = st.columns(4)
         n1.metric("可規劃標的", f"{len(next_day_order_plan)}")
         n2.metric("高/中買進成交機率", f"{int(next_day_order_plan['buy_touch_probability'].isin(['HIGH', 'MEDIUM']).sum())}")
         n3.metric("高/中賣出成交機率", f"{int(next_day_order_plan['sell_touch_probability'].isin(['HIGH', 'MEDIUM']).sum())}")
-        n4.metric("保護性停損單", f"{int((next_day_order_plan['suggested_order_type'] == 'PROTECTIVE_STOP').sum())}")
+        n4.metric("高優先處理", f"{int((next_day_order_plan.get('priority_score', pd.Series(dtype=float)) >= 70).sum())}")
         st.warning("此頁輸出的是隔日限價 / 停損研究計畫，不會連接券商，也不會自動下單。實際掛單前請確認即時報價、盤前盤後價差、流動性與個人風險。")
+        st.markdown("#### 優先處理熱力表")
+        st.caption("綠色代表買進 / 加碼急迫度，紅色代表賣出 / 減碼 / 保護急迫度；顏色越深，越應該優先打開該標的技術圖確認掛單價。")
+        _render_next_day_order_heatmap(next_day_order_plan)
         order_display = _humanize_next_day_order_plan(next_day_order_plan)
-        st.dataframe(
-            order_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
+        dataframe_kwargs = {
+            "data": order_display,
+            "use_container_width": True,
+            "hide_index": True,
+            "column_config": {
                 t("持有數量", UI_LANG): st.column_config.NumberColumn(format="%.4f"),
                 t("目前價格", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("戰術停損", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("硬停損", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("策略買進價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("策略停利價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("優先處理分數", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                t("買進急迫度", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                t("賣出急迫度", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                t("SMC信心分數", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                t("SMC多週期摘要", UI_LANG): st.column_config.TextColumn(width="medium"),
                 t("20日中位日內波動%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
                 t("20日80分位日內波動%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
                 t("原因", UI_LANG): st.column_config.TextColumn(width="large"),
             },
+        }
+        try:
+            selection_event = st.dataframe(
+                **dataframe_kwargs,
+                key="next_day_order_table",
+                on_select="rerun",
+                selection_mode="single-row",
+            )
+        except TypeError:
+            selection_event = None
+            st.dataframe(**dataframe_kwargs)
+
+        selected_row_index = None
+        if selection_event is not None:
+            selected_rows = getattr(getattr(selection_event, "selection", None), "rows", []) or []
+            if selected_rows:
+                selected_row_index = int(selected_rows[0])
+        if selected_row_index is not None and 0 <= selected_row_index < len(next_day_order_plan):
+            st.session_state.selected_order_ticker = str(next_day_order_plan.iloc[selected_row_index]["ticker"])
+        selectable_order_tickers = list(next_day_order_plan["ticker"].astype(str))
+        default_selected_order = st.session_state.get("selected_order_ticker", selectable_order_tickers[0])
+        default_order_index = selectable_order_tickers.index(default_selected_order) if default_selected_order in selectable_order_tickers else 0
+        selected_order_ticker = st.selectbox(
+            "選擇下方技術圖股票",
+            selectable_order_tickers,
+            index=default_order_index,
+            key="selected_order_ticker_selectbox",
+            help="支援新版 Streamlit 點選上方表格 row 自動切換；若瀏覽器/版本不支援，可用這個選單切換。",
         )
+        st.session_state.selected_order_ticker = selected_order_ticker
+
+        st.markdown("#### 隔日掛單技術圖")
+        selected_order_row = next_day_order_plan[next_day_order_plan["ticker"].astype(str) == selected_order_ticker].iloc[0]
+        selected_order_prices = prices[prices["ticker"].astype(str) == selected_order_ticker].sort_values("date").tail(160).copy()
+        if selected_order_prices.empty or len(selected_order_prices) < 35:
+            st.info("資料不足以產生隔日掛單技術圖，請拉長歷史區間或改用日 K。")
+        else:
+            tech_summary = _cached_order_technical_context(selected_order_prices, selected_order_row)
+            s1, s2, s3, s4, s5 = st.columns(5)
+            s1.metric("RSI14", f"{tech_summary.get('rsi_14', 0):.1f}")
+            s2.metric("MACD Hist", f"{tech_summary.get('macd_hist', 0):+.3f}")
+            s3.metric("布林位置", f"{tech_summary.get('bb_position_20', 0):.2f}")
+            s4.metric("量能比", f"{tech_summary.get('volume_ratio_20d', 1):.2f}x")
+            s5.metric("UKF 動能", f"{tech_summary.get('ukf_momentum_score', 50):.1f}", str(tech_summary.get("ukf_trend_state", "NEUTRAL")))
+            st.caption("圖表使用 x unified hover 與 spike line，滑鼠移到任一天可同時查看 K 線、成交量、RSI、MACD 與 UKF Momentum / UKF 動能；SMC overlay 會優先使用 smartmoneyconcepts 套件計算 FVG、Order Block、Liquidity、Swing、BOS/CHoCH，若套件或資料不足則自動退回內建規則。")
+            decision_match = report[report["ticker"].astype(str) == selected_order_ticker] if not report.empty else pd.DataFrame()
+            selected_decision_row = decision_match.iloc[0] if not decision_match.empty else None
+            fig = build_swing_order_technical_chart(selected_order_prices, selected_order_ticker, selected_order_row, selected_decision_row, lookback=160, show_volume=True)
+            st.plotly_chart(fig, use_container_width=True)
+            _render_indicator_glossary()
+            with st.expander("UKF 動能怎麼看？", expanded=False):
+                st.write("UKF 動能是用價格報酬、RSI、MACD histogram、布林位置與量能比形成多指標動能觀測，再用狀態空間濾波平滑雜訊。它不是深度學習預測，也不代表自動下單；分數高於 58 偏多，低於 42 偏弱，中間區間代表雜訊較多。")
+                st.write("若隔日買進區靠近布林下緣、RSI 回到 40-55、MACD 柱體收斂且 UKF 動能不再惡化，通常比直接追價更適合 swing trading。若價格接近賣出區但 RSI 過熱、MACD 柱體縮短，分批停利/反彈減碼的理由會更充分。")
         with st.expander("如何使用隔日掛單計畫？", expanded=True):
             st.write("隔日買進區：用最近 20 日日內波動估算，通常比策略級買進價更靠近現價，目標是提高隔日限價單有機會成交的程度。")
             st.write("隔日賣出區：適合已有持倉時做分批停利觀察；策略停利價仍可作為較長週期目標。")

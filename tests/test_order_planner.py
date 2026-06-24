@@ -75,8 +75,74 @@ def test_build_next_day_order_plan_outputs_reachable_prices_and_order_type() -> 
     assert row["hard_stop_price"] < row["current_price"]
     assert row["tactical_stop_price"] > row["hard_stop_price"]
     assert row["buy_touch_probability"] in {"HIGH", "MEDIUM", "LOW_MEDIUM", "LOW_STRATEGY_LEVEL"}
-    assert row["suggested_order_type"] in {"BUY_LIMIT", "ADD_LIMIT", "BRACKET_PLAN", "PROTECTIVE_STOP", "NO_ORDER_WAIT", "TAKE_PROFIT_LIMIT", "REDUCE_OR_AVOID"}
+    assert row["suggested_order_type"] in {"BUY_LIMIT", "ADD_LIMIT", "BRACKET_PLAN", "PROTECTIVE_STOP", "PROTECT_PROFIT_STOP", "REBOUND_REDUCE_LIMIT", "NO_ORDER_WAIT", "TAKE_PROFIT_LIMIT", "REDUCE_OR_AVOID"}
     assert "研究輔助" in row["reason"]
+
+
+def test_losing_position_with_positive_short_term_return_is_rebound_reduce_not_take_profit() -> None:
+    prices = _prices("TSLR")
+    holdings = pd.DataFrame(
+        [
+            {
+                "ticker": "TSLR",
+                "quantity": 30,
+                "cost_price": 130.0,
+                "broker_current_price": 110.0,
+                "market_value": 3300.0,
+            }
+        ]
+    )
+    decision_report = pd.DataFrame(
+        [
+            {
+                "ticker": "TSLR",
+                "action": "HOLD_WAIT",
+                "suggested_buy_price": 100.0,
+                "suggested_sell_price": 150.0,
+                "stop_loss_price": 90.0,
+                "relationship_adjusted_return_pct": 1.2,
+                "kelly_fraction": 0.0,
+            }
+        ]
+    )
+
+    plan = build_next_day_order_plan(prices, decision_report, holdings)
+
+    assert plan.iloc[0]["suggested_order_type"] == "REBOUND_REDUCE_LIMIT"
+    assert "不應稱為停利" in plan.iloc[0]["reason"]
+
+
+def test_profitable_position_without_edge_uses_profit_protective_stop() -> None:
+    prices = _prices("AAPL")
+    holdings = pd.DataFrame(
+        [
+            {
+                "ticker": "AAPL",
+                "quantity": 10,
+                "cost_price": 80.0,
+                "broker_current_price": 110.0,
+                "market_value": 1100.0,
+            }
+        ]
+    )
+    decision_report = pd.DataFrame(
+        [
+            {
+                "ticker": "AAPL",
+                "action": "HOLD_WAIT",
+                "suggested_buy_price": 96.0,
+                "suggested_sell_price": 125.0,
+                "stop_loss_price": 90.0,
+                "relationship_adjusted_return_pct": -0.5,
+                "kelly_fraction": 0.0,
+            }
+        ]
+    )
+
+    plan = build_next_day_order_plan(prices, decision_report, holdings)
+
+    assert plan.iloc[0]["suggested_order_type"] == "PROTECT_PROFIT_STOP"
+    assert "保護獲利" in plan.iloc[0]["reason"]
 
 
 def test_build_next_day_order_plan_handles_empty_inputs() -> None:
