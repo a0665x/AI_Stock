@@ -11,11 +11,11 @@ def test_next_day_strategy_workbench_tab_and_controls_exist() -> None:
 
     assert "隔日策略工作台" in source
     assert "build_order_strategy_workbench" in source
-    assert "策略工作台股票範圍" in source
-    assert "風險耐受度%" in source
-    assert "工作台持有天數" in source
-    assert "策略欄位" in source
-    assert "工作台回測期間" in source
+    assert "要驗證哪些股票" in source
+    assert "可承受停損幅度%" in source
+    assert "預計持有天數" in source
+    assert "選擇策略" in source
+    assert "用多久歷史驗證" in source
     assert "啟動隔日策略回測" in source
     assert "策略勝率 / 股性適配表" in source
     assert "最佳掛單區間" in source

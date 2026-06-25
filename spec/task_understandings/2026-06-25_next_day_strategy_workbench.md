@@ -30,6 +30,7 @@ Main public API:
 
 - `filter_backtest_window()`
 - `build_order_strategy_workbench()`
+- `build_strategy_visualization_payload()`
 
 Supported strategy families:
 
@@ -39,20 +40,44 @@ Supported strategy families:
 - `kd_macd` / KD/MACD 決策
 - `shap_factor` / SHAP 因子代理決策
 
-The new tab exposes layered controls:
+The new tab exposes layered controls with user-facing labels:
 
-1. `策略工作台股票範圍`: all tickers or selected tickers.
-2. `工作台持有天數`: 1/5/10/15/30 days.
-3. `風險耐受度%`: slider, default 10%.
-4. `工作台回測期間`: 1周/2周/1個月/3個月/半年/1年.
-5. `策略欄位`: multiselect checkboxes for discrete strategy families.
+1. `要驗證哪些股票`: all tickers or selected tickers.
+2. `預計持有天數`: 1/5/10/15/30 days.
+3. `可承受停損幅度%`: slider, default 10%.
+4. `用多久歷史驗證`: 1周/2周/1個月/3個月/半年/1年.
+5. `選擇策略`: multiselect checkboxes for discrete strategy families.
 6. `啟動隔日策略回測`: explicit button; no eager global computation.
 
 Outputs:
 
 - `策略勝率 / 股性適配表`
 - `最佳掛單區間`
+- `策略買賣點與績效曲線`
+- `策略績效摘要`
 - CSV download for workbench recommendations.
+
+Strategy visualization follow-up added:
+
+- `策略視覺化股票` dropdown selects one ticker after the workbench run.
+- `策略視覺化策略` multiselect can show `綜合策略` and/or individual strategies.
+- `顯示 SMC 特徵` checkbox can hide/show SMC Order Block / Liquidity overlays.
+- Chart overlays stateful strategy markers on candles: long entries are BUY, long exits are SELL, bearish/fade entries are SELL, and short/fade exits are BUY_TO_COVER.
+- Chart adds per-trade vertical dotted entry/exit lines, a dashed PnL connector, green/red profit/loss area, and an exit annotation such as `+6.00%` or `-4.63%` so the user can see exactly where each trade made or lost money.
+- Strategy trades are non-overlapping: after an exit, at least one full bar must pass before the same strategy can enter again. This avoids misleading same-candle or adjacent-candle buy/sell markers.
+- Chart also overlays strategy buy/sell zones, SMA/Bollinger/RSI/MACD/volume, equity curve, and drawdown curve.
+- The metrics table summarizes trade count, win rate, cumulative return, max drawdown, and Profit Factor for the selected strategy view.
+- The strategy suitability bar chart now explains its colors: green/yellow/red mean high/mixed/weak strategy suitability for the selected ticker and history window. This is not SHAP positive/negative correlation.
+- Sidebar `個人交易偏好` was added for manual trading assumptions: no day trading, max orders per stock per day, default shares/lots per order, and usual holding days. The usual holding days value becomes the default for the workbench `預計持有天數` control.
+- Sidebar was later narrowed to global controls only: data source, ticker universe, history period, K-line interval, global decision horizon, personal trading preferences, CSV upload, and manual refresh. Backtest/Smart Tuning controls now live in `回測`; factor controls live in `因子研究`; price-chart volume display lives in `價格圖表`.
+- The workbench tab now includes `頁籤使用目的` explaining what the tab is for and how to use it.
+
+Follow-up integration implemented in the same cycle:
+
+- `src/ai_stock/order_planner.py` now exposes `integrate_strategy_recommendations_into_order_plan()`.
+- `隔日掛單計畫` reads the last workbench result from session state and adds final buy/sell/stop/take-profit fields.
+- The priority heatmap uses final strategy ranges when available.
+- The row-linked technical chart overlays the final strategy ranges, not only the original base ranges.
 
 ## Design decisions
 
@@ -81,16 +106,19 @@ Local smoke test with current holdings subset:
 
 Local tests:
 
-- 76 passed
+- 88 passed
 
 New tests:
 
 - `tests/test_order_strategy_workbench.py`
 - `tests/test_next_day_strategy_workbench_ui_source.py`
+- `tests/test_strategy_visualization.py`
+- `tests/test_strategy_visualization_ui_source.py`
+- `tests/test_strategy_state_machine.py`
+- `tests/test_sidebar_refactor_ui_source.py`
 
 ## Follow-up ideas
 
 - Add direct integration from factor research SHAP importance cache into `shap_factor` strategy.
-- Add per-strategy equity curves in the workbench.
 - Add color-styled BUY/SELL urgency table similar to the existing next-day order heatmap.
 - Move analysis-only tabs into an `分析報表` group if Streamlit navigation is later refactored into pages.

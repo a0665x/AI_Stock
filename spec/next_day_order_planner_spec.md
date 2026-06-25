@@ -30,6 +30,7 @@ Core user question:
   - `build_next_day_order_plan()`
   - `build_smc_timeframe_signals()`
   - `augment_order_plan_with_smc()`
+  - `integrate_strategy_recommendations_into_order_plan()`
 - `src/ai_stock/smc_adapter.py`
   - Optional `smartmoneyconcepts` adapter.
   - Falls back to internal SMC rules when package/data is unavailable.
@@ -103,6 +104,22 @@ The Streamlit UI uses:
 - `buy_urgency_score`
 - `sell_urgency_score`
 - `priority_score`
+
+## Strategy Workbench Final Recommendation Overlay
+
+After the user runs `隔日策略工作台`, the app stores its `order_recommendations` in session state. The next-day order planner then calls `integrate_strategy_recommendations_into_order_plan()` to add final actionable fields without hiding the base plan context:
+
+- `final_recommendation_source`: `STRATEGY_WORKBENCH` or `BASE_ORDER_PLAN`.
+- `final_side`: `BUY`, `SELL`, or `WAIT`.
+- `final_strategy`: best strategy label from the workbench.
+- `final_strategy_edge_score`: 0-100 suitability score.
+- `final_buy_low` / `final_buy_high`.
+- `final_sell_low` / `final_sell_high`.
+- `final_stop_loss`.
+- `final_take_profit`.
+- `final_reason`.
+
+When a strategy recommendation exists for a ticker, the priority heatmap and row-linked technical chart use these final levels. If no workbench result exists, the base next-day ranges remain the fallback. This preserves the fast default workflow while allowing the user to turn a completed strategy backtest into a concrete next-day order plan.
 
 ## Priority Heatmap UI
 

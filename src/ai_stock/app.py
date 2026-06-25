@@ -12,8 +12,8 @@ from ai_stock.backtesting import compare_backtest_scenarios, run_backtest
 from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_history, normalize_ohlcv
 from ai_stock.forecasting import build_decision_report
 from ai_stock.portfolio import build_portfolio_order_plan, load_local_portfolio, portfolio_tickers, summarize_portfolio
-from ai_stock.order_planner import augment_order_plan_with_smc, build_next_day_order_plan, build_smc_timeframe_signals
-from ai_stock.order_strategy_workbench import ORDER_STRATEGIES, build_order_strategy_workbench
+from ai_stock.order_planner import augment_order_plan_with_smc, build_next_day_order_plan, build_smc_timeframe_signals, integrate_strategy_recommendations_into_order_plan
+from ai_stock.order_strategy_workbench import ORDER_STRATEGIES, build_order_strategy_workbench, build_strategy_visualization_payload
 from ai_stock.swing_order_chart import build_swing_order_technical_chart, summarize_swing_order_technical_context
 from ai_stock.visual_insights import (
     build_decision_price_chart,
@@ -32,6 +32,7 @@ from ai_stock.trade_vision import (
     compute_trade_signal_score,
     detect_market_structure,
 )
+from ai_stock.training_data import build_training_dataset, compute_top_training_features
 from ai_stock.i18n import (
     LANGUAGES,
     localize_dataframe_for_display,
@@ -245,6 +246,7 @@ def _clear_cached_market_data() -> None:
     _cached_smart_tuning_lite.clear()
     _cached_next_day_order_plan.clear()
     _cached_factor_research.clear()
+    _cached_training_dataset.clear()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -400,6 +402,13 @@ def _cached_factor_horizon_comparison(
         model_type=model_type,
         top_n=20,
     )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_training_dataset(prices: pd.DataFrame, forward_days: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    dataset = build_training_dataset(prices, forward_days=forward_days, include_smc=True, include_patterns=True)
+    ranked = compute_top_training_features(dataset, target_col=f"forward_return_{forward_days}d", top_n=30)
+    return dataset, ranked
 
 
 def _fmt_price(value: float | int | None) -> str:
@@ -646,6 +655,9 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         out["suggested_order_type"] = out["suggested_order_type"].map(order_labels).fillna(out["suggested_order_type"])
     out["隔日買進區"] = out.apply(lambda row: f"{_fmt_price(row.get('next_day_buy_low'))} - {_fmt_price(row.get('next_day_buy_high'))}", axis=1)
     out["隔日賣出區"] = out.apply(lambda row: f"{_fmt_price(row.get('next_day_sell_low'))} - {_fmt_price(row.get('next_day_sell_high'))}", axis=1)
+    if "final_buy_low" in out.columns:
+        out["最終買進區"] = out.apply(lambda row: f"{_fmt_price(row.get('final_buy_low'))} - {_fmt_price(row.get('final_buy_high'))}", axis=1)
+        out["最終賣出區"] = out.apply(lambda row: f"{_fmt_price(row.get('final_sell_low'))} - {_fmt_price(row.get('final_sell_high'))}", axis=1)
     out = translate_dataframe_values(out, UI_LANG)
     columns = [
         "ticker",
@@ -653,6 +665,14 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         "current_price",
         "action",
         "suggested_order_type",
+        "final_recommendation_source",
+        "final_side",
+        "final_strategy",
+        "final_strategy_edge_score",
+        "最終買進區",
+        "最終賣出區",
+        "final_stop_loss",
+        "final_take_profit",
         "priority_score",
         "buy_urgency_score",
         "sell_urgency_score",
@@ -678,6 +698,12 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
         "current_price": "目前價格",
         "action": "模型決策",
         "suggested_order_type": "建議單型",
+        "final_recommendation_source": "最終推薦來源",
+        "final_side": "最終方向",
+        "final_strategy": "最終策略",
+        "final_strategy_edge_score": "最終策略適配分數",
+        "final_stop_loss": "最終停損",
+        "final_take_profit": "最終停利",
         "priority_score": "優先處理分數",
         "buy_urgency_score": "買進急迫度",
         "sell_urgency_score": "賣出急迫度",
@@ -721,10 +747,12 @@ def _render_next_day_order_heatmap(plan: pd.DataFrame) -> None:
         {
             "標的": top.get("ticker", pd.Series(dtype=str)).astype(str),
             "建議單型": top.get("suggested_order_type", pd.Series(dtype=str)).astype(str),
+            "最終策略": top.get("final_strategy", pd.Series(dtype=str)).fillna("").astype(str),
+            "最終方向": top.get("final_side", pd.Series(dtype=str)).fillna("").astype(str),
             "買進急迫度": top.get("buy_urgency_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
-            "買進區": top.apply(lambda row: f"{_fmt_price(row.get('next_day_buy_low'))} - {_fmt_price(row.get('next_day_buy_high'))}", axis=1),
+            "買進區": top.apply(lambda row: f"{_fmt_price(row.get('final_buy_low', row.get('next_day_buy_low')))} - {_fmt_price(row.get('final_buy_high', row.get('next_day_buy_high')))}", axis=1),
             "賣出急迫度": top.get("sell_urgency_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
-            "賣出區": top.apply(lambda row: f"{_fmt_price(row.get('next_day_sell_low'))} - {_fmt_price(row.get('next_day_sell_high'))}", axis=1),
+            "賣出區": top.apply(lambda row: f"{_fmt_price(row.get('final_sell_low', row.get('next_day_sell_low')))} - {_fmt_price(row.get('final_sell_high', row.get('next_day_sell_high')))}", axis=1),
             "優先分數": top.get("priority_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
             "SMC方向": top.get("smc_bias", pd.Series(dtype=str)).astype(str),
         }
@@ -751,7 +779,7 @@ def _render_next_day_order_heatmap(plan: pd.DataFrame) -> None:
         .map(lambda value: urgency_style(value, "green"), subset=["買進急迫度"])
         .map(lambda value: urgency_style(value, "red"), subset=["賣出急迫度"])
         .map(priority_style, subset=["優先分數"])
-        .set_properties(subset=["標的", "建議單型", "買進區", "賣出區", "SMC方向", "處理方向"], **{"font-weight": "600"})
+        .set_properties(subset=["標的", "建議單型", "最終策略", "最終方向", "買進區", "賣出區", "SMC方向", "處理方向"], **{"font-weight": "600"})
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -1271,7 +1299,7 @@ def _build_factor_horizon_trend_chart(summary: pd.DataFrame) -> go.Figure:
             mode="lines+markers",
             name="測試勝率 / Accuracy",
             line={"color": "#16a34a", "width": 3},
-            hovertemplate="horizon=%{x}天<br>勝率=%{y:.1f}%<extra></extra>",
+            hovertemplate="預測%{x}天後<br>勝率=%{y:.1f}%<extra></extra>",
         )
     )
     fig.add_trace(
@@ -1281,7 +1309,7 @@ def _build_factor_horizon_trend_chart(summary: pd.DataFrame) -> go.Figure:
             mode="lines+markers",
             name="AUC",
             line={"color": "#2563eb", "width": 3},
-            hovertemplate="horizon=%{x}天<br>AUC=%{y:.1f}%<extra></extra>",
+            hovertemplate="預測%{x}天後<br>AUC=%{y:.1f}%<extra></extra>",
         )
     )
     fig.add_trace(
@@ -1291,14 +1319,14 @@ def _build_factor_horizon_trend_chart(summary: pd.DataFrame) -> go.Figure:
             mode="lines+markers",
             name="歷史上漲率 baseline",
             line={"color": "#94a3b8", "dash": "dash"},
-            hovertemplate="horizon=%{x}天<br>baseline=%{y:.1f}%<extra></extra>",
+            hovertemplate="預測%{x}天後<br>baseline=%{y:.1f}%<extra></extra>",
         )
     )
     fig.add_hline(y=50, line_color="#64748b", line_width=1, line_dash="dot")
     fig.update_layout(
         height=360,
         margin={"l": 10, "r": 10, "t": 20, "b": 10},
-        xaxis={"title": "預測天數 horizon", "dtick": 1},
+        xaxis={"title": "預測幾天後", "dtick": 1},
         yaxis_title="百分比%",
         hovermode="x unified",
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
@@ -1328,14 +1356,14 @@ def _build_factor_ticker_horizon_heatmap(summary: pd.DataFrame, metric: str = "a
             zmax=100,
             text=values.round(1).astype(str) + "%",
             texttemplate="%{text}",
-            hovertemplate="代號=%{y}<br>horizon=%{x}<br>" + metric_labels.get(metric, metric) + "=%{z:.1f}%<extra></extra>",
+            hovertemplate="代號=%{y}<br>預測%{x}天後<br>" + metric_labels.get(metric, metric) + "=%{z:.1f}%<extra></extra>",
             colorbar={"title": "%"},
         )
     )
     fig.update_layout(
         height=max(280, min(720, 120 + 42 * len(values.index))),
         margin={"l": 10, "r": 10, "t": 20, "b": 10},
-        xaxis_title="預測天數 horizon",
+        xaxis_title="預測幾天後",
         yaxis_title="股票代號",
     )
     return fig
@@ -1429,6 +1457,22 @@ portfolio_load = load_local_portfolio(".")
 portfolio_default_tickers = portfolio_tickers(portfolio_load.holdings)
 default_ticker_text = ", ".join(portfolio_default_tickers) if portfolio_default_tickers else "AAPL, MSFT, NVDA"
 
+# Default values for cheap global summaries. Page-specific controls live inside their tabs.
+factor_window = 7
+factor_horizons = [1, 3, 5, 10]
+factor_threshold_pct = 0.0
+factor_model_label = "Gradient Boosting"
+factor_model_type = "gradient_boosting"
+backtest_lookback = 120
+backtest_compare_enabled = False
+backtest_horizons = [3, 5, 10]
+backtest_exit_rules = ["time", "stop_loss", "trailing_stop"]
+trailing_stop_pct = 0.05
+backtest_only_buy = False
+smart_tuning_horizons = [3, 5, 10]
+smart_tuning_stop_widths_pct = [3, 5, 8]
+show_volume = True
+
 with st.sidebar:
     st.header("分析設定")
     st.caption("1 選資料 → 2 調參數 → 3 看決策摘要")
@@ -1444,43 +1488,14 @@ with st.sidebar:
     with c2:
         interval = st.selectbox("K線週期", ["1d", "1wk", "1mo"], index=0)
 
-    horizon = st.slider("決策天數", 1, 30, 5, help="用於 ARIMA / 線性模型的預估 horizon。")
-    st.markdown("##### 因子研究")
-    factor_window = st.slider("因子輸入天數", 3, 21, 7, help="sliding window 的 X：使用過去 N 天 K線/KD/MACD/RSI 等因子。")
-    factor_horizons = st.multiselect(
-        "比較預測天數 horizon",
-        [1, 3, 5, 10],
-        default=[1, 3, 5, 10],
-        help="一次比較未來 1/3/5/10 天漲跌；每個 horizon 會各自訓練模型與計算 SHAP/fallback 重要度。",
-    )
-    if not factor_horizons:
-        factor_horizons = [1]
-    factor_threshold_pct = st.slider("漲跌分類門檻%", 0.0, 2.0, 0.0, step=0.1, help="forward return 高於此門檻才標為上漲，可降低微小雜訊。")
-    factor_model_labels = {
-        "Gradient Boosting": "gradient_boosting",
-        "Random Forest": "random_forest",
-        "Logistic Regression": "logistic",
-    }
-    factor_model_label = st.selectbox("因子模型", list(factor_model_labels), index=0)
-    factor_model_type = factor_model_labels[factor_model_label]
-    backtest_lookback = st.slider("回測訓練視窗", 60, 260, 120, step=10, help="每次回測決策只看此前這段歷史資料。")
-    backtest_compare_enabled = st.toggle("啟用持有天數 / 出場規則比較", value=False, help="多策略比較會同時跑多組回測；需要比較時再開啟，避免首頁載入過慢。")
-    backtest_horizons = st.multiselect("比較持有天數", [3, 5, 10, 20, 30], default=[3, 5, 10], help="回測會比較每種持有天數的結果。", disabled=not backtest_compare_enabled)
-    exit_rule_options_zh = {
-        "時間出場": "time",
-        "停損優先": "stop_loss",
-        "移動停損": "trailing_stop",
-    }
-    exit_rule_display_options = translate_options(exit_rule_options_zh.keys(), UI_LANG)
-    exit_rule_options = dict(zip(exit_rule_display_options, exit_rule_options_zh.values()))
-    selected_exit_rule_labels = st.multiselect("比較出場規則", exit_rule_display_options, default=exit_rule_display_options, disabled=not backtest_compare_enabled)
-    backtest_exit_rules = [exit_rule_options[label] for label in selected_exit_rule_labels]
-    trailing_stop_pct = st.slider("移動停損幅度", 2.0, 15.0, 5.0, step=0.5, help="移動停損出場規則使用；例如 5% 代表從進場後高點回落 5% 出場。", disabled=not backtest_compare_enabled) / 100
-    st.markdown("##### Smart Tuning Lite")
-    smart_tuning_horizons = st.multiselect("Smart Tuning 持有天數", [3, 5, 10, 20], default=[3, 5, 10], help="按下 Smart Tuning 按鈕後才會掃描這些持有天數。")
-    smart_tuning_stop_widths_pct = st.multiselect("Smart Tuning 風險寬度%", [3, 5, 8, 10], default=[3, 5, 8], help="掃描停損 / 移動停損風險寬度；數值越大越寬鬆。")
-    backtest_only_buy = st.toggle("回測只吃偏多觀察訊號", value=False, help="關閉時會測試每個決策點的 long-only 結果；開啟時只測 BUY_WATCH。")
-    show_volume = st.toggle("K 線圖顯示成交量", value=True)
+    horizon = st.slider("決策天數", 1, 30, 5, help="用今天以前的資料，估計未來幾天後的價格方向。以前文件常寫 horizon，這裡用『決策天數』表示。")
+    with st.expander("個人交易偏好", expanded=False):
+        st.caption("這些不是券商下單設定，只是讓回測/策略工作台更貼近你的人工掛單習慣。")
+        prefer_no_day_trade = st.checkbox("不做當沖", value=True, help="策略視覺化與回測使用隔夜/多日持有假設；同一天不會同時開倉又平倉。")
+        max_orders_per_stock_per_day = st.number_input("每天每股最多掛單次數", min_value=1, max_value=5, value=1, step=1, help="目前日 K 回測會以每股每日最多一次新訊號為原則；未來接 15m/1h 時可用來限制 intraday 過度交易。")
+        default_order_lots = st.number_input("預設每次掛單股數/張數", min_value=0.0, max_value=1000.0, value=1.0, step=1.0, help="只作為報表提醒，不會自動下單；美股可把 1 視為 1 股，台股可自行視為 1 張。")
+        preferred_holding_days = st.select_slider("習慣持有幾天", options=[1, 5, 10, 15, 30], value=5, help="作為隔日策略工作台的預設持有天數；仍可在該頁調整。")
+        st.caption(f"目前偏好：每天每股最多 {int(max_orders_per_stock_per_day)} 次、每次約 {default_order_lots:g} 股/張、{'不做當沖' if prefer_no_day_trade else '允許日內處理'}。")
     uploaded = st.file_uploader("上傳 CSV", type=["csv"], help="支援 date/ticker/open/high/low/close/volume 或中文欄位。")
     st.caption("行情資料已快取 1 小時，並寫入 docker_runtime/market_cache；Docker 重啟後仍會優先讀磁碟快取。需要最新行情時再按下方按鈕。")
     refresh = st.button("重新抓資料 / 更新分析", type="primary", use_container_width=True)
@@ -1614,7 +1629,7 @@ else:
             "Kelly 是半 Kelly 且有上限，適合當倉位參考，不是必然下單比例。"
         )
 
-tab_decision, tab_portfolio, tab_next_day_order, tab_order_strategy, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "持倉下單計畫", "隔日掛單計畫", "隔日策略工作台", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
+tab_decision, tab_portfolio, tab_next_day_order, tab_order_strategy, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策總覽", "持倉下單計畫", "隔日掛單計畫", "隔日策略工作台", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "研究與訓練資料"])
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
@@ -1724,6 +1739,15 @@ with tab_next_day_order:
         else:
             smc_mtf_signals = _cached_smc_multitimeframe_signals(smc_order_tickers, prices, enable_intraday=False)
         next_day_order_plan = augment_order_plan_with_smc(next_day_order_plan, smc_mtf_signals)
+        strategy_result_for_orders = st.session_state.get("order_strategy_workbench_result")
+        strategy_orders_for_plan = pd.DataFrame()
+        if isinstance(strategy_result_for_orders, dict):
+            strategy_orders_for_plan = strategy_result_for_orders.get("order_recommendations", pd.DataFrame())
+        if not strategy_orders_for_plan.empty:
+            next_day_order_plan = integrate_strategy_recommendations_into_order_plan(next_day_order_plan, strategy_orders_for_plan)
+            st.success("已整合上次『隔日策略工作台』回測結果：最終買賣區間會優先採用該股票歷史適配度最高的策略。")
+        else:
+            next_day_order_plan = integrate_strategy_recommendations_into_order_plan(next_day_order_plan, None)
         if enable_intraday_smc:
             st.caption("SMC 信心分數目前整合 15m / 1h / 1d；資料來源為 yfinance OHLCV + smartmoneyconcepts/fallback SMC engine。")
         else:
@@ -1735,7 +1759,7 @@ with tab_next_day_order:
         n4.metric("高優先處理", f"{int((next_day_order_plan.get('priority_score', pd.Series(dtype=float)) >= 70).sum())}")
         st.warning("此頁輸出的是隔日限價 / 停損研究計畫，不會連接券商，也不會自動下單。實際掛單前請確認即時報價、盤前盤後價差、流動性與個人風險。")
         st.markdown("#### 優先處理熱力表")
-        st.caption("綠色代表買進 / 加碼急迫度，紅色代表賣出 / 減碼 / 保護急迫度；顏色越深，越應該優先打開該標的技術圖確認掛單價。")
+        st.caption("綠色代表買進 / 加碼急迫度，紅色代表賣出 / 減碼 / 保護急迫度；顏色越深，越應該優先打開該標的技術圖確認掛單價。若已跑過隔日策略工作台，買賣區會改用最終策略推薦區間。")
         _render_next_day_order_heatmap(next_day_order_plan)
         order_display = _humanize_next_day_order_plan(next_day_order_plan)
         dataframe_kwargs = {
@@ -1749,6 +1773,9 @@ with tab_next_day_order:
                 t("硬停損", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("策略買進價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("策略停利價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("最終策略適配分數", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                t("最終停損", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                t("最終停利", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
                 t("優先處理分數", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
                 t("買進急迫度", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
                 t("賣出急迫度", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
@@ -1790,7 +1817,17 @@ with tab_next_day_order:
         st.session_state.selected_order_ticker = selected_order_ticker
 
         st.markdown("#### 隔日掛單技術圖")
-        selected_order_row = next_day_order_plan[next_day_order_plan["ticker"].astype(str) == selected_order_ticker].iloc[0]
+        selected_order_row = next_day_order_plan[next_day_order_plan["ticker"].astype(str) == selected_order_ticker].iloc[0].copy()
+        for src, dst in [
+            ("final_buy_low", "next_day_buy_low"),
+            ("final_buy_high", "next_day_buy_high"),
+            ("final_sell_low", "next_day_sell_low"),
+            ("final_sell_high", "next_day_sell_high"),
+            ("final_stop_loss", "tactical_stop_price"),
+            ("final_take_profit", "strategy_take_profit_price"),
+        ]:
+            if src in selected_order_row.index and pd.notna(selected_order_row.get(src)):
+                selected_order_row[dst] = selected_order_row.get(src)
         selected_order_prices = prices[prices["ticker"].astype(str) == selected_order_ticker].sort_values("date").tail(160).copy()
         if selected_order_prices.empty or len(selected_order_prices) < 35:
             st.info("資料不足以產生隔日掛單技術圖，請拉長歷史區間或改用日 K。")
@@ -1825,7 +1862,16 @@ with tab_next_day_order:
 
 with tab_order_strategy:
     st.subheader("隔日策略工作台")
-    st.caption("這裡不再只依賴 Kelly 0/非 0，而是讓你先選股票、風險耐受度、持有天數、策略欄位與回測期間，再按鈕回測不同策略是否符合該股票股性，最後回推隔日掛單區間與買賣迫切度。")
+    st.caption("這裡不再只依賴 Kelly 0/非 0，而是先設定『要驗證哪些股票、預計持有幾天、可承受多少停損、要測哪些策略、用多久歷史驗證』，再回測哪種策略比較符合該股票股性，最後回推隔日掛單區間與買賣迫切度。")
+    with st.expander("頁籤使用目的", expanded=False):
+        st.write("用途：比較同一檔股票在不同策略下的歷史表現，確認哪一種策略比較符合最近股性，再把最佳策略回寫到隔日掛單計畫。")
+        st.write("方法：先選股票與預計持有天數，再選可承受停損幅度、歷史驗證期間與策略；按下回測後，先看策略適配分數，再看買賣點圖、每筆交易垂直虛線、獲利/虧損區間線、權益曲線與回撤曲線。")
+        st.write("個人交易偏好：左側『個人交易偏好』目前會影響此頁的預設持有天數，並提醒回測採用每天每股最多一次、避免同日開平倉的人工掛單假設。")
+    with st.expander("這些設定怎麼看？", expanded=False):
+        st.write("預計持有天數：這次掛單後，假設最多觀察幾天才出場；1 天偏隔日短打，5～10 天偏 swing trading，15～30 天偏波段。")
+        st.write("風險耐受度：這次策略回測與掛單區間使用的停損寬度上限；不是你的全部帳戶風險。")
+        st.write("用多久歷史驗證：用最近多久資料檢查這個策略是否適合該股票；太短樣本少，太長可能混入不同市場環境。")
+        st.write("策略選擇：布林、SMC、UKF、KD/MACD、SHAP proxy 是不同判斷方法；建議先單檔 + 少數策略測清楚，再全選。")
     if next_day_order_plan.empty:
         st.info("目前沒有隔日掛單計畫資料；請先確認持倉檔與行情資料。")
     else:
@@ -1837,18 +1883,18 @@ with tab_order_strategy:
         available_order_tickers = list(next_day_order_plan["ticker"].dropna().astype(str).str.upper().unique())
         ctl1, ctl2, ctl3 = st.columns([0.32, 0.34, 0.34])
         with ctl1:
-            strategy_scope = st.radio("策略工作台股票範圍", ["全選", "自選"], horizontal=True, index=0)
+            strategy_scope = st.radio("要驗證哪些股票", ["全選", "自選"], horizontal=True, index=0)
             if strategy_scope == "全選":
                 strategy_tickers = available_order_tickers
             else:
-                strategy_tickers = st.multiselect("選擇策略工作台股票", available_order_tickers, default=available_order_tickers[:1])
+                strategy_tickers = st.multiselect("選擇要驗證的股票", available_order_tickers, default=available_order_tickers[:1])
         with ctl2:
-            strategy_holding_days = st.select_slider("工作台持有天數", options=[1, 5, 10, 15, 30], value=5, help="所有策略回測與掛單區間都用同一個持有天數作為基準，避免 1 天訊號和 30 天訊號混在一起。")
-            strategy_risk_tolerance_pct = st.slider("風險耐受度%", 1.0, 30.0, 10.0, step=0.5, help="用於策略回測停損與掛單風險寬度；預設 10%。")
+            strategy_holding_days = st.select_slider("預計持有天數", options=[1, 5, 10, 15, 30], value=int(preferred_holding_days), help="這次策略回測與掛單區間都用同一個持有天數作為基準，避免 1 天短打和 30 天波段訊號混在一起。左側『習慣持有幾天』會作為預設值。")
+            strategy_risk_tolerance_pct = st.slider("可承受停損幅度%", 1.0, 30.0, 10.0, step=0.5, help="用於策略回測停損與掛單風險寬度；預設 10%。")
         with ctl3:
-            strategy_backtest_range = st.selectbox("工作台回測期間", ["1周", "2周", "1個月", "3個月", "半年", "1年"], index=3)
+            strategy_backtest_range = st.selectbox("用多久歷史驗證", ["1周", "2周", "1個月", "3個月", "半年", "1年"], index=3)
             selected_strategy_labels = st.multiselect(
-                "策略欄位",
+                "選擇策略",
                 list(ORDER_STRATEGIES.values()),
                 default=list(ORDER_STRATEGIES.values()),
                 help="策略屬於離散規則，使用勾選比拉 bar 更清楚；風險耐受度這種連續值才用 slider。",
@@ -1882,9 +1928,10 @@ with tab_order_strategy:
                     backtest_range=strategy_backtest_range,
                 )
                 st.session_state.order_strategy_workbench_signature = strategy_signature
+            st.rerun()
         result = st.session_state.order_strategy_workbench_result
         if result is None:
-            st.info("請先選擇股票 / 持有天數 / 風險耐受度 / 策略欄位 / 回測期間，然後按『啟動隔日策略回測』。建議先單檔測，再全選。")
+            st.info("請先選擇股票 / 預計持有天數 / 可承受停損幅度 / 策略 / 歷史驗證期間，然後按『啟動隔日策略回測』。建議先單檔測，再全選。")
         else:
             if st.session_state.order_strategy_workbench_signature != strategy_signature:
                 st.warning("目前顯示的是上一次策略工作台結果；參數已改變，若要更新請再按一次『啟動隔日策略回測』。")
@@ -1894,7 +1941,11 @@ with tab_order_strategy:
                 st.info("目前參數下沒有足夠交易樣本。請拉長回測期間、放寬策略或選其他股票。")
             else:
                 st.markdown("#### 策略勝率 / 股性適配表")
-                st.caption("勝率不是唯一依據；工作台同時看平均報酬、累積報酬、Profit Factor、最大回撤與停損命中率，產生策略適配分數。")
+                st.caption("勝率不是唯一依據；工作台同時看平均報酬、累積報酬、Profit Factor、最大回撤與停損命中率，產生策略適配分數。策略適配分數顏色：綠色代表策略適配較高，黃色代表中性待確認，紅色代表近期不適合；這不是 SHAP 正負相關，也不是單一因子的方向貢獻。")
+                with st.expander("策略適配分數顏色怎麼看？", expanded=False):
+                    st.write("綠色：回測勝率、報酬、Profit Factor、回撤與停損命中率綜合後較健康，代表這個策略近期比較符合該股票股性。")
+                    st.write("黃色：有部分指標可用，但仍需看買賣點圖與回撤曲線確認。")
+                    st.write("紅色：近期策略適配較弱，不代表一定看空，只代表這套規則在所選期間不穩。這不是 SHAP 正負相關；SHAP 方向請到因子研究/歸因頁看。")
                 st.plotly_chart(_build_strategy_score_chart(summary), use_container_width=True)
                 summary_display = _humanize_strategy_workbench_summary(summary)
                 st.dataframe(
@@ -1938,14 +1989,72 @@ with tab_order_strategy:
                     file_name="ai_stock_next_day_strategy_workbench.csv",
                     mime="text/csv",
                 )
+
+            st.markdown("#### 策略買賣點與績效曲線")
+            st.caption("先選股票，再選要看的策略曲線；圖上會把策略買進/賣出點、每筆交易垂直虛線、獲利/虧損區間線、掛單區、SMC 特徵、權益曲線與回撤放在同一張圖，方便比較哪種策略更符合這檔股票的股性。")
+            viz_tickers = sorted(summary["ticker"].dropna().astype(str).str.upper().unique()) if not summary.empty and "ticker" in summary.columns else strategy_tickers
+            if not viz_tickers:
+                st.info("目前沒有可視化的策略結果。")
+            else:
+                viz_col1, viz_col2, viz_col3 = st.columns([0.25, 0.45, 0.30])
+                with viz_col1:
+                    strategy_viz_ticker = st.selectbox("策略視覺化股票", viz_tickers, key="strategy_viz_ticker")
+                strategy_labels_for_viz = [label for key, label in ORDER_STRATEGIES.items() if key in selected_strategy_keys]
+                with viz_col2:
+                    strategy_viz_labels = st.multiselect(
+                        "策略視覺化策略",
+                        ["綜合策略"] + strategy_labels_for_viz,
+                        default=["綜合策略"] + strategy_labels_for_viz[:2],
+                        help="可單看某一種策略，也可看綜合策略。買賣點會疊在價格圖上，下方顯示 equity 與 drawdown。",
+                    )
+                with viz_col3:
+                    show_strategy_smc = st.checkbox("顯示 SMC 特徵", value=True, help="開啟後在價格圖中顯示 SMC Order Block / Liquidity 等輔助結構；圖例說明可在隔日掛單計畫的 glossary 對照。")
+                label_to_strategy_with_composite = {"綜合策略": "COMPOSITE", **{label: key for key, label in ORDER_STRATEGIES.items()}}
+                strategy_viz_keys = [label_to_strategy_with_composite[label] for label in strategy_viz_labels if label in label_to_strategy_with_composite]
+                payload = build_strategy_visualization_payload(
+                    prices,
+                    result.get("trades", pd.DataFrame()),
+                    ticker=strategy_viz_ticker,
+                    strategies=strategy_viz_keys or ["COMPOSITE"],
+                    order_recommendations=orders,
+                    show_smc=show_strategy_smc,
+                )
+                st.plotly_chart(payload["figure"], use_container_width=True)
+                metrics_df = payload.get("strategy_metrics", pd.DataFrame())
+                if not metrics_df.empty:
+                    st.markdown("##### 策略績效摘要")
+                    metrics_display = metrics_df.copy()
+                    metrics_display["win_rate"] = metrics_display["win_rate"] * 100
+                    st.dataframe(
+                        metrics_display.rename(
+                            columns={
+                                "strategy": "策略",
+                                "trade_count": "交易次數",
+                                "win_rate": "勝率%",
+                                "cumulative_return_pct": "累積報酬%",
+                                "max_drawdown_pct": "最大回撤%",
+                                "profit_factor": "Profit Factor",
+                            }
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "交易次數": st.column_config.NumberColumn(format="%d"),
+                            "勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                            "累積報酬%": st.column_config.NumberColumn(format="%.2f%%"),
+                            "最大回撤%": st.column_config.NumberColumn(format="%.2f%%"),
+                            "Profit Factor": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                    )
         with st.expander("為什麼這裡不再只看 Kelly？", expanded=False):
-            st.write("Kelly 容易在預估優勢小於波動風險時變成 0.0%，適合作為倉位保守上限，但不適合單獨決定隔日掛單。策略工作台改用可勾選策略 + 指定持有天數 + 指定風險耐受度 + 近端回測，先確認這檔股票近期股性比較吃哪種策略，再回推買賣區間。")
-            st.write("策略欄位用勾選，因為布林、SMC、UKF、KD/MACD、SHAP 因子代理是離散方法；風險耐受度用 slider，因為它是連續參數。")
+            st.write("Kelly 容易在預估優勢小於波動風險時變成 0.0%，適合作為倉位保守上限，但不適合單獨決定隔日掛單。策略工作台改用可勾選策略 + 預計持有天數 + 可承受停損幅度 + 近端回測，先確認這檔股票近期股性比較吃哪種策略，再回推買賣區間。")
+            st.write("策略選擇用勾選，因為布林、SMC、UKF、KD/MACD、SHAP 因子代理是離散方法；可承受停損幅度用 slider，因為它是連續參數。")
 
 with tab_chart:
     left, right = st.columns([1, 2])
     with left:
         selected = st.selectbox("選擇圖表代號", visible_tickers)
+        chart_show_volume = st.toggle("K 線圖顯示成交量", value=True, key="price_chart_show_volume")
         selected_report = report[report["ticker"] == selected]
         if not selected_report.empty:
             row = selected_report.iloc[0]
@@ -1958,7 +2067,7 @@ with tab_chart:
         one = prices[prices["ticker"] == selected].sort_values("date")
         decision_row = selected_report.iloc[0] if not selected_report.empty else None
         trades_for_chart = backtest.trades if not backtest.trades.empty else None
-        fig = build_decision_price_chart(one, selected, show_volume, decision_row=decision_row, backtest_trades=trades_for_chart)
+        fig = build_decision_price_chart(one, selected, chart_show_volume, decision_row=decision_row, backtest_trades=trades_for_chart)
         for trace in fig.data:
             if getattr(trace, "name", None):
                 trace.name = _(str(trace.name))
@@ -2033,12 +2142,64 @@ with tab_trade_vision:
 
 with tab_backtest:
     st.subheader("Walk-forward 回測")
-    st.caption("每隔 horizon 天，只使用當下以前的資料重新產生決策報表，再用下一段行情驗證。這不是實盤成交模擬，先用來檢查策略方向、停損與回撤是否合理。")
-    if backtest.summary.empty:
+    st.caption("每隔一段『預計持有天數』，只使用當下以前的資料重新產生決策報表，再用下一段行情驗證。這不是實盤成交模擬，先用來檢查策略方向、停損與回撤是否合理。")
+    with st.expander("回測設定", expanded=True):
+        cfg1, cfg2, cfg3 = st.columns(3)
+        with cfg1:
+            tab_backtest_lookback = st.slider("回測訓練視窗", 60, 260, 120, step=10, help="每次回測決策只看此前這段歷史資料。", key="tab_backtest_lookback")
+            tab_backtest_only_buy = st.toggle("回測只吃偏多觀察訊號", value=False, help="關閉時會測試每個決策點的 long-only 結果；開啟時只測 BUY_WATCH。", key="tab_backtest_only_buy")
+        with cfg2:
+            tab_backtest_compare_enabled = st.toggle("啟用持有天數 / 出場規則比較", value=False, help="多策略比較會同時跑多組回測；需要比較時再開啟，避免頁面載入過慢。", key="tab_backtest_compare_enabled")
+            tab_backtest_horizons = st.multiselect("比較持有天數", [3, 5, 10, 20, 30], default=[3, 5, 10], help="回測會比較每種持有天數的結果。", disabled=not tab_backtest_compare_enabled, key="tab_backtest_horizons")
+        with cfg3:
+            exit_rule_options_zh = {"時間出場": "time", "停損優先": "stop_loss", "移動停損": "trailing_stop"}
+            exit_rule_display_options = translate_options(exit_rule_options_zh.keys(), UI_LANG)
+            exit_rule_options = dict(zip(exit_rule_display_options, exit_rule_options_zh.values()))
+            selected_exit_rule_labels = st.multiselect("比較出場規則", exit_rule_display_options, default=exit_rule_display_options, disabled=not tab_backtest_compare_enabled, key="tab_backtest_exit_rules")
+            tab_backtest_exit_rules = [exit_rule_options[label] for label in selected_exit_rule_labels]
+            tab_trailing_stop_pct = st.slider("移動停損幅度", 2.0, 15.0, 5.0, step=0.5, help="移動停損出場規則使用；例如 5% 代表從進場後高點回落 5% 出場。", disabled=not tab_backtest_compare_enabled, key="tab_trailing_stop_pct") / 100
+        st.markdown("##### Smart Tuning Lite")
+        smart1, smart2 = st.columns(2)
+        with smart1:
+            tab_smart_tuning_horizons = st.multiselect("Smart Tuning 持有天數", [3, 5, 10, 20], default=[3, 5, 10], help="按下 Smart Tuning 按鈕後才會掃描這些持有天數。", key="tab_smart_tuning_horizons")
+        with smart2:
+            tab_smart_tuning_stop_widths_pct = st.multiselect("Smart Tuning 風險寬度%", [3, 5, 8, 10], default=[3, 5, 8], help="掃描停損 / 移動停損風險寬度；數值越大越寬鬆。", key="tab_smart_tuning_stop_widths_pct")
+
+    tab_backtest = _cached_backtest(
+        prices,
+        horizon=horizon,
+        lookback=tab_backtest_lookback,
+        only_buy_watch=tab_backtest_only_buy,
+        trailing_stop_pct=tab_trailing_stop_pct,
+    )
+    tab_scenario_comparison = (
+        _cached_scenario_comparison(
+            prices,
+            horizons=tuple(tab_backtest_horizons or [horizon]),
+            exit_rules=tuple(tab_backtest_exit_rules or ["stop_loss"]),
+            lookback=tab_backtest_lookback,
+            only_buy_watch=tab_backtest_only_buy,
+            trailing_stop_pct=tab_trailing_stop_pct,
+        )
+        if tab_backtest_compare_enabled
+        else pd.DataFrame()
+    )
+    tab_smart_tuning_signature = (
+        tuple(visible_tickers),
+        str(prices["date"].min()),
+        str(prices["date"].max()),
+        int(len(prices)),
+        tuple(int(h) for h in tab_smart_tuning_horizons or [horizon]),
+        tuple(tab_backtest_exit_rules or ["time", "stop_loss", "trailing_stop"]),
+        tuple(float(v) / 100 for v in tab_smart_tuning_stop_widths_pct or [5]),
+        int(tab_backtest_lookback),
+        bool(tab_backtest_only_buy),
+    )
+    if tab_backtest.summary.empty:
         st.info("資料量不足以回測；請把歷史區間拉到 1y / 2y，或降低回測訓練視窗。")
     else:
-        bt_summary = _humanize_backtest_summary(backtest.summary)
-        top_bt = backtest.summary.iloc[0]
+        bt_summary = _humanize_backtest_summary(tab_backtest.summary)
+        top_bt = tab_backtest.summary.iloc[0]
         b1, b2, b3, b4 = st.columns(4)
         b1.metric("最佳累積報酬", _fmt_pct(top_bt.get("cumulative_return", 0) * 100), str(top_bt.get("ticker", "")))
         b2.metric("勝率", _fmt_pct(top_bt.get("win_rate", 0) * 100))
@@ -2046,13 +2207,13 @@ with tab_backtest:
         b4.metric("停損命中率", _fmt_pct(top_bt.get("stop_loss_hit_rate", 0) * 100))
 
         st.markdown("#### 持有天數 / 出場規則比較")
-        if not backtest_compare_enabled:
-            st.info("多策略比較目前未啟用。請在左側打開『啟用持有天數 / 出場規則比較』後，選擇要比較的持有天數與出場規則。")
-        elif scenario_comparison.empty:
+        if not tab_backtest_compare_enabled:
+            st.info("多策略比較目前未啟用。請在本頁『回測設定』打開『啟用持有天數 / 出場規則比較』後，選擇要比較的持有天數與出場規則。")
+        elif tab_scenario_comparison.empty:
             st.info("目前設定下沒有足夠資料產生策略比較。")
         else:
-            st.plotly_chart(_build_scenario_comparison_chart(scenario_comparison), use_container_width=True)
-            scenario_display = _humanize_backtest_summary(scenario_comparison)
+            st.plotly_chart(_build_scenario_comparison_chart(tab_scenario_comparison), use_container_width=True)
+            scenario_display = _humanize_backtest_summary(tab_scenario_comparison)
             st.dataframe(
                 scenario_display,
                 use_container_width=True,
@@ -2079,7 +2240,7 @@ with tab_backtest:
 
         st.markdown("#### Smart Tuning Lite")
         st.caption("掃描持有天數、出場規則與風險寬度，依累積報酬、勝率、Profit Factor、最大回撤與停損率產生綜合分數。")
-        smart_current = st.session_state.smart_tuning_signature == smart_tuning_signature and not st.session_state.smart_tuning_result.empty
+        smart_current = st.session_state.smart_tuning_signature == tab_smart_tuning_signature and not st.session_state.smart_tuning_result.empty
         run_smart = st.button(
             "執行 Smart Tuning Lite",
             type="primary",
@@ -2090,15 +2251,15 @@ with tab_backtest:
             with st.spinner("正在執行 Smart Tuning Lite 參數掃描…"):
                 smart_result = _cached_smart_tuning_lite(
                     prices,
-                    horizons=tuple(smart_tuning_horizons or [horizon]),
-                    exit_rules=tuple(backtest_exit_rules or ["time", "stop_loss", "trailing_stop"]),
-                    stop_loss_pcts=tuple(float(v) / 100 for v in smart_tuning_stop_widths_pct or [5]),
-                    lookback=backtest_lookback,
-                    only_buy_watch=backtest_only_buy,
-                    trailing_stop_pct=trailing_stop_pct,
+                    horizons=tuple(tab_smart_tuning_horizons or [horizon]),
+                    exit_rules=tuple(tab_backtest_exit_rules or ["time", "stop_loss", "trailing_stop"]),
+                    stop_loss_pcts=tuple(float(v) / 100 for v in tab_smart_tuning_stop_widths_pct or [5]),
+                    lookback=tab_backtest_lookback,
+                    only_buy_watch=tab_backtest_only_buy,
+                    trailing_stop_pct=tab_trailing_stop_pct,
                 )
             st.session_state.smart_tuning_result = smart_result
-            st.session_state.smart_tuning_signature = smart_tuning_signature
+            st.session_state.smart_tuning_signature = tab_smart_tuning_signature
             smart_current = not smart_result.empty
         smart_result = st.session_state.smart_tuning_result
         if smart_result.empty:
@@ -2147,16 +2308,16 @@ with tab_backtest:
             },
         )
 
-        if backtest.equity_curve.empty:
+        if tab_backtest.equity_curve.empty:
             st.info("目前設定下沒有產生交易曲線；可關閉『只吃偏多觀察訊號』或拉長資料區間。")
         else:
             all_label = _("全部")
             bt_ticker = st.selectbox("選擇回測曲線代號", [all_label] + visible_tickers, key="bt_ticker")
-            st.plotly_chart(_build_equity_chart(backtest.equity_curve, None if bt_ticker == all_label else bt_ticker), use_container_width=True)
+            st.plotly_chart(_build_equity_chart(tab_backtest.equity_curve, None if bt_ticker == all_label else bt_ticker), use_container_width=True)
 
-        if not backtest.trades.empty:
+        if not tab_backtest.trades.empty:
             with st.expander("查看逐筆交易", expanded=False):
-                bt_trades = _humanize_backtest_trades(backtest.trades.tail(200))
+                bt_trades = _humanize_backtest_trades(tab_backtest.trades.tail(200))
                 st.dataframe(
                     bt_trades,
                     use_container_width=True,
@@ -2172,16 +2333,44 @@ with tab_backtest:
                 )
                 st.download_button(
                     "下載回測逐筆交易 CSV",
-                    _humanize_backtest_trades(backtest.trades).to_csv(index=False).encode("utf-8-sig"),
+                    _humanize_backtest_trades(tab_backtest.trades).to_csv(index=False).encode("utf-8-sig"),
                     file_name="ai_stock_backtest_trades.csv",
                     mime="text/csv",
                 )
 
 with tab_factor:
-    st.subheader("因子研究：過去 N 天因子 → 未來多 horizon 漲跌")
+    st.subheader("因子研究：過去 N 天因子 → 未來多個預測天數 漲跌")
     st.caption(
         "用 sliding window 收集歷史樣本：X 是過去 N 天 K線、KD、MACD、RSI、量能、波動與回撤等因子；"
-        "y 是未來 1/3/5/10 天 forward return 是否高於漲跌門檻。每個 horizon 獨立訓練與歸因；這是模型歸因與統計關聯，不是因果證明。"
+        "y 是未來 1/3/5/10 天報酬是否高於漲跌門檻。每個預測天數獨立訓練與歸因；這是模型歸因與統計關聯，不是因果證明。"
+    )
+    with st.expander("因子研究設定", expanded=True):
+        factor_cfg1, factor_cfg2 = st.columns(2)
+        with factor_cfg1:
+            factor_window = st.slider("因子輸入天數", 3, 21, 7, help="sliding window 的 X：使用過去 N 天 K線/KD/MACD/RSI 等因子。", key="tab_factor_window")
+            factor_horizons = st.multiselect(
+                "比較預測幾天後",
+                [1, 3, 5, 10],
+                default=[1, 3, 5, 10],
+                help="一次比較未來 1/3/5/10 天漲跌；每個預測天數會各自訓練模型與計算 SHAP/fallback 重要度。",
+                key="tab_factor_horizons",
+            )
+            if not factor_horizons:
+                factor_horizons = [1]
+        with factor_cfg2:
+            factor_threshold_pct = st.slider("漲跌分類門檻%", 0.0, 2.0, 0.0, step=0.1, help="forward return 高於此門檻才標為上漲，可降低微小雜訊。", key="tab_factor_threshold_pct")
+            factor_model_labels = {"Gradient Boosting": "gradient_boosting", "Random Forest": "random_forest", "Logistic Regression": "logistic"}
+            factor_model_label = st.selectbox("因子模型", list(factor_model_labels), index=0, key="tab_factor_model")
+            factor_model_type = factor_model_labels[factor_model_label]
+    factor_signature = (
+        tuple(visible_tickers),
+        str(prices["date"].min()),
+        str(prices["date"].max()),
+        int(len(prices)),
+        int(factor_window),
+        tuple(int(h) for h in factor_horizons),
+        float(factor_threshold_pct),
+        str(factor_model_type),
     )
     st.write(
         _(
@@ -2196,31 +2385,31 @@ with tab_factor:
     factor_tables = st.session_state.factor_research_report
     factor_is_current = current_factor_signature == factor_signature and factor_tables is not None
     run_factor = st.button(
-        "執行多 horizon 因子研究",
+        "執行多個預測天數 因子研究",
         type="primary",
         use_container_width=True,
-        help="按下後才針對每個 horizon 建立 sliding-window dataset、訓練分類模型並計算 SHAP/fallback、相關性與分組勝率。",
+        help="按下後才針對每個預測天數建立 sliding-window dataset、訓練分類模型並計算 SHAP/fallback、相關性與分組勝率。",
     )
     if run_factor:
-        with st.spinner("正在建立 sliding-window 樣本並訓練多 horizon 因子模型…"):
+        with st.spinner("正在建立 sliding-window 樣本並訓練多個預測天數 因子模型…"):
             factor_tables = _cached_factor_horizon_comparison(prices, factor_window, tuple(factor_horizons), factor_threshold_pct, factor_model_type)
         st.session_state.factor_research_report = factor_tables
         st.session_state.factor_signature = factor_signature
         factor_is_current = factor_tables is not None
 
     if factor_tables is None:
-        st.info("尚未執行因子研究。請按『執行多 horizon 因子研究』；建議先用 1y 以上日 K，樣本會比較穩。")
+        st.info("尚未執行因子研究。請按『執行多個預測天數 因子研究』；建議先用 1y 以上日 K，樣本會比較穩。")
     elif factor_tables.get("summary", pd.DataFrame()).empty:
         st.warning("目前資料量或漲跌樣本不足以訓練因子模型；請拉長歷史區間、降低漲跌門檻，或改用日 K。")
     else:
         if not factor_is_current:
-            st.warning("目前顯示的是上一次因子研究結果；sidebar 資料或因子參數已改變。若要更新，請再按一次『執行多 horizon 因子研究』。")
+            st.warning("目前顯示的是上一次因子研究結果；sidebar 資料或因子參數已改變。若要更新，請再按一次『執行多個預測天數 因子研究』。")
         summary_table = factor_tables["summary"]
         importance_table = factor_tables["importance"]
         correlations_table = factor_tables["correlations"]
         grouped_table = factor_tables["grouped_win_rates"]
         heatmap_table = factor_tables["y_heatmap"]
-        st.markdown("#### 多 horizon 勝率與 AUC 趨勢")
+        st.markdown("#### 多個預測天數 勝率與 AUC 趨勢")
         st.plotly_chart(_build_factor_horizon_trend_chart(summary_table), use_container_width=True)
         trend_display = build_horizon_metric_trends(summary_table).copy()
         if not trend_display.empty:
@@ -2249,7 +2438,7 @@ with tab_factor:
                     "股票數": st.column_config.NumberColumn(format="%d"),
                 },
             )
-        st.markdown("#### 每檔股票 × horizon 表現熱力圖")
+        st.markdown("#### 每檔股票 × 預測天數表現熱力圖")
         metric_options = {
             "測試勝率 / Accuracy": "accuracy",
             "AUC": "auc",
@@ -2257,12 +2446,12 @@ with tab_factor:
         }
         heat_metric_label = st.selectbox("熱力圖指標", list(metric_options), key="factor_ticker_horizon_heatmap_metric")
         st.plotly_chart(_build_factor_ticker_horizon_heatmap(summary_table, metric_options[heat_metric_label]), use_container_width=True)
-        st.caption("顏色越綠代表該股票在該 horizon 的指標越高；AUC 接近 50% 代表模型排序能力接近隨機。")
+        st.caption("顏色越綠代表該股票在該預測天數的指標越高；AUC 接近 50% 代表模型排序能力接近隨機。")
 
-        st.markdown("#### 多 horizon 模型表現比較")
+        st.markdown("#### 多個預測天數 模型表現比較")
         best_factor = summary_table.sort_values(["accuracy", "auc"], ascending=False).iloc[0]
         f1, f2, f3, f4 = st.columns(4)
-        f1.metric("最佳 horizon", f"{int(best_factor.get('horizon', 0))} 天", str(best_factor.get("ticker", "")))
+        f1.metric("最佳預測天數", f"{int(best_factor.get('horizon', 0))} 天", str(best_factor.get("ticker", "")))
         f2.metric("測試準確率", _fmt_pct(best_factor.get("accuracy", 0) * 100))
         f3.metric("AUC", _fmt_pct(best_factor.get("auc", 0) * 100) if pd.notna(best_factor.get("auc", None)) else "—")
         f4.metric("歷史上漲率", _fmt_pct(best_factor.get("baseline_up_rate", 0) * 100))
@@ -2285,11 +2474,11 @@ with tab_factor:
 
         factor_ticker = st.selectbox("選擇因子研究代號", sorted(summary_table["ticker"].unique()), key="factor_ticker")
         available_horizons = sorted(int(h) for h in summary_table[summary_table["ticker"] == factor_ticker]["horizon"].unique())
-        factor_detail_horizon = st.selectbox("選擇要查看的 horizon", available_horizons, key="factor_detail_horizon")
+        factor_detail_horizon = st.selectbox("選擇要查看的預測天數", available_horizons, key="factor_detail_horizon")
         st.markdown("#### 重要因子與相對貢獻")
         one_importance = importance_table[(importance_table["ticker"] == factor_ticker) & (importance_table["horizon"] == factor_detail_horizon)]
         if one_importance.empty:
-            st.info("這檔股票 / horizon 沒有可顯示的重要因子。")
+            st.info("這檔股票 / 預測天數沒有可顯示的重要因子。")
         else:
             method = str(one_importance["method"].iloc[0])
             st.write(_("目前歸因方法：{method}", method=method))
@@ -2380,7 +2569,7 @@ with tab_factor:
                     },
                 )
         st.download_button(
-            "下載多 horizon 因子重要度 CSV",
+            "下載多個預測天數 因子重要度 CSV",
             _humanize_factor_importance(importance_table).to_csv(index=False).encode("utf-8-sig"),
             file_name="ai_stock_factor_horizon_importance.csv",
             mime="text/csv",
@@ -2449,37 +2638,81 @@ with tab_relation:
         st.caption("接近 +1 代表同漲同跌程度高；接近 -1 代表反向；接近 0 代表近期關聯較低。決策表中的『同/反向關係壓力』會把這些關係與近5日同業/反向標的表現合併成輔助訊號。")
 
 with tab_raw:
-    st.subheader("技術指標 Snapshot")
+    st.subheader("研究與訓練資料中心")
+    st.caption("把每天價格、技術指標、SMC/型態信號與未來報酬目標整理成一張可下載的 training data。一般使用者可檢查資料是否合理；研究者可下載後再訓練未來三天趨勢 AI model。")
+    with st.expander("頁籤使用目的與簡單名詞", expanded=True):
+        st.write("『等待確認』：不是沒有模型，而是舊決策總覽認為預估報酬還沒有大過近期波動與回撤風險；操作上代表先不追價、不新增倉位，已持有者優先看停損與停利。")
+        st.write("『預測幾天後』：以前畫面常寫 horizon，意思就是用今天資料去看幾天後的漲跌，例如 3 天後報酬。")
+        st.write("『Training Data』：每一列是一檔股票某一天，欄位分成模型輸入 X（價格/技術指標）、輔助訊號（SMC/UKF/K線型態）與模型答案 y（未來 N 天報酬/漲跌標籤）。")
+        st.write("建議流程：先看決策總覽 → 隔日掛單/策略驗證 → 回測/因子研究 → 最後下載 Training Data 做模型研究。")
+    with st.expander("欄位字典：Training Data 怎麼看？", expanded=False):
+        st.write("`forward_return_Nd`：N 天後報酬，也就是模型要學的主要答案。")
+        st.write("`target_up_Nd`：N 天後是否上漲，1 代表上漲、0 代表沒有上漲。")
+        st.write("`target_available_Nd`：這一列是否真的有未來答案；最後 N 天尚未發生，所以會是 0，不應拿來訓練 y。")
+        st.write("SMC 欄位：FVG、Order Block、Liquidity、BOS/ChoCH 等市場結構特徵。")
+        st.write("UKF / pattern 欄位：去噪動能與 K 線型態，作為輔助特徵。")
+        st.warning("這是資料集，不是已訓練完成的 AI 模型；下載後仍需切分 train/test、避免資料洩漏並做 walk-forward 驗證。")
+
+    training_forward_days = st.selectbox("預測幾天後", [1, 3, 5, 10], index=1, help="用今天以前已知的欄位，建立未來幾天後的報酬與漲跌標籤；預設 3 天是為未來三天趨勢模型準備。")
+    current_training_signature = (tuple(visible_tickers), str(prices["date"].max()) if not prices.empty else "", int(training_forward_days), len(prices))
+    run_training_data = st.button("產生 Training Data", type="primary", use_container_width=True, help="按下後才整理完整欄位；首次包含 SMC/UKF 特徵時可能較慢。")
+    if run_training_data or st.session_state.get("training_data_signature") == current_training_signature:
+        if run_training_data:
+            with st.spinner("正在整理分析結果數據 / training data…"):
+                training_dataset, top_training_features = _cached_training_dataset(prices, int(training_forward_days))
+            st.session_state.training_data_result = (training_dataset, top_training_features)
+            st.session_state.training_data_signature = current_training_signature
+        else:
+            training_dataset, top_training_features = st.session_state.get("training_data_result", (pd.DataFrame(), pd.DataFrame()))
+
+        st.markdown("#### 分析結果數據（Training Data）")
+        if training_dataset.empty:
+            st.info("目前資料不足，尚無法產生 training data。")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("資料列數", f"{len(training_dataset):,}")
+            c2.metric("欄位數", f"{len(training_dataset.columns):,}")
+            c3.metric("股票數", f"{training_dataset['ticker'].nunique():,}")
+            c4.metric("預測目標", f"未來 {training_forward_days} 天")
+            st.markdown("#### 最有相關性的前 N 個欄位")
+            st.caption("用 Pearson/Spearman 相關性快速找出和未來報酬最有關的欄位；SMC 欄位也會一起排序。相關強度高只代表歷史一起變動較明顯，不代表一定可預測或有因果。")
+            top_n_features = st.slider("顯示前幾個欄位", min_value=5, max_value=30, value=15, step=5)
+            st.dataframe(
+                top_training_features.head(top_n_features),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "feature": st.column_config.TextColumn("欄位"),
+                    "pearson_corr": st.column_config.NumberColumn("線性相關", format="%.4f"),
+                    "spearman_corr": st.column_config.NumberColumn("排名相關", format="%.4f"),
+                    "abs_score": st.column_config.NumberColumn("相關強度", format="%.4f"),
+                    "non_null_ratio": st.column_config.NumberColumn("資料完整度", format="%.2f"),
+                },
+            )
+            st.markdown("#### 每日完整欄位資料")
+            st.caption("每列是一檔股票某一天；包含 OHLCV、RSI/MACD/KD/布林/量能/UKF、SMC FVG/OB/Liquidity/BOS/ChoCH、K 線型態與未來報酬標籤。最後 N 天 target_available=0，代表還沒有真實未來答案。")
+            selected_training_ticker = st.selectbox("查看哪一檔 training data", ["全部"] + sorted(training_dataset["ticker"].astype(str).unique()), key="training_data_ticker")
+            training_view = training_dataset if selected_training_ticker == "全部" else training_dataset[training_dataset["ticker"].astype(str) == selected_training_ticker]
+            st.dataframe(training_view.tail(800), use_container_width=True, hide_index=True)
+            st.download_button(
+                "下載 Training Data CSV",
+                training_dataset.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"ai_stock_training_data_forward_{training_forward_days}d.csv",
+                mime="text/csv",
+            )
+            st.download_button(
+                "下載最相關欄位 CSV",
+                top_training_features.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"ai_stock_top_training_features_forward_{training_forward_days}d.csv",
+                mime="text/csv",
+            )
+    else:
+        st.info("Training Data 尚未產生。請先選『預測幾天後』，再按『產生 Training Data』；這樣不會拖慢首頁載入。")
+
+    st.markdown("#### 技術指標 Snapshot")
     human_snapshot = _humanize_snapshot(snapshot)
-    st.dataframe(
-        human_snapshot,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "1日報酬": st.column_config.NumberColumn(format="%.2f%%"),
-            "5日報酬": st.column_config.NumberColumn(format="%.2f%%"),
-            "20日報酬": st.column_config.NumberColumn(format="%.2f%%"),
-            "20日年化波動": st.column_config.NumberColumn(format="%.2f%%"),
-            "最新收盤": st.column_config.NumberColumn(format="%.2f"),
-            "SMA20": st.column_config.NumberColumn(format="%.2f"),
-            "SMA60": st.column_config.NumberColumn(format="%.2f"),
-            "EMA20": st.column_config.NumberColumn(format="%.2f"),
-            "EMA60": st.column_config.NumberColumn(format="%.2f"),
-            "RSI14": st.column_config.NumberColumn(format="%.1f"),
-            "MACD 柱": st.column_config.NumberColumn(format="%.3f"),
-            "布林位置": st.column_config.NumberColumn(format="%.2f"),
-            "ATR%": st.column_config.NumberColumn(format="%.2f%%"),
-            "KD-K": st.column_config.NumberColumn(format="%.1f"),
-            "KD-D": st.column_config.NumberColumn(format="%.1f"),
-            "MFI14": st.column_config.NumberColumn(format="%.1f"),
-            "量能比": st.column_config.NumberColumn(format="%.2f"),
-            "距60日高點": st.column_config.NumberColumn(format="%.2f%%"),
-            "60日最大回撤": st.column_config.NumberColumn(format="%.2f%%"),
-            "20日支撐": st.column_config.NumberColumn(format="%.2f"),
-            "20日壓力": st.column_config.NumberColumn(format="%.2f"),
-        },
-    )
-    st.subheader("原始標準化價格資料")
+    st.dataframe(human_snapshot, use_container_width=True, hide_index=True)
+    st.markdown("#### 原始標準化價格資料")
     st.dataframe(prices.tail(500), use_container_width=True, hide_index=True)
 
 st.info("提醒：這是研究與決策輔助，不是投資建議；Futu OpenAPI 實盤/即時串接需可執行 OpenD 的主機或遠端 OpenD。")

@@ -4,9 +4,12 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from .analytics import add_indicators
 from .order_planner import _as_float
+from .smc_adapter import build_smc_context
 from .swing_order_chart import compute_ukf_momentum_state
 
 ORDER_STRATEGIES: dict[str, str] = {
@@ -96,7 +99,20 @@ def _empty_summary() -> pd.DataFrame:
 
 
 def _empty_trades() -> pd.DataFrame:
-    return pd.DataFrame(columns=["ticker", "strategy", "entry_date", "exit_date", "entry_price", "exit_price", "return_pct", "stop_hit", "signal"])
+    return pd.DataFrame(
+        columns=[
+            "ticker",
+            "strategy",
+            "entry_date",
+            "exit_date",
+            "entry_price",
+            "exit_price",
+            "return_pct",
+            "stop_hit",
+            "signal",
+            "direction",
+        ]
+    )
 
 
 def _signal_from_row(row: pd.Series, strategy: str) -> tuple[int, str, float]:
@@ -178,32 +194,52 @@ def _max_drawdown_from_returns(returns: pd.Series) -> float:
 
 
 def _run_strategy_backtest(one: pd.DataFrame, ticker: str, strategy: str, holding_days: int, risk_tolerance_pct: float) -> tuple[dict[str, Any], pd.DataFrame]:
+    """Run a stateful, non-overlapping strategy simulation.
+
+    Earlier versions sampled every ``holding_days`` bars independently. That made
+    charts confusing because one trade could exit on the same date the next trade
+    entered, and short entries were still drawn as BUY markers. This routine uses
+    a simple position state machine: only enter when flat, exit by stop or time,
+    then wait at least one full bar before considering the next entry.
+    """
     data = _prepare_strategy_frame(one)
     trades: list[dict[str, Any]] = []
-    if len(data) <= holding_days + 35:
-        return _summary_row(ticker, strategy, holding_days, risk_tolerance_pct, pd.DataFrame(), "NO_DATA"), _empty_trades()
-    step = max(1, int(holding_days))
-    for entry_idx in range(35, len(data) - holding_days, step):
+    horizon = max(1, int(holding_days))
+    cooldown_bars = 1
+    if len(data) <= horizon + 35:
+        return _summary_row(ticker, strategy, horizon, risk_tolerance_pct, pd.DataFrame(), "NO_DATA"), _empty_trades()
+
+    entry_idx = 35
+    last_exit_idx = -cooldown_bars - 2
+    while entry_idx < len(data) - horizon:
+        if entry_idx <= last_exit_idx + cooldown_bars:
+            entry_idx += 1
+            continue
         row = data.iloc[entry_idx]
         direction, signal, _strength = _signal_from_row(row, strategy)
         if direction == 0:
+            entry_idx += 1
             continue
         entry = _as_float(row.get("close"), np.nan)
         if not np.isfinite(entry) or entry <= 0:
+            entry_idx += 1
             continue
-        future = data.iloc[entry_idx + 1 : entry_idx + holding_days + 1]
+        future = data.iloc[entry_idx + 1 : entry_idx + horizon + 1]
         if future.empty:
-            continue
+            break
         stop_pct = max(float(risk_tolerance_pct), 1.0) / 100.0
         if direction > 0:
             stop_price = entry * (1 - stop_pct)
             stop_hits = future[future["low"] <= stop_price]
             if not stop_hits.empty:
-                exit_row = stop_hits.iloc[0]
+                exit_label = stop_hits.index[0]
+                exit_idx = int(data.index.get_loc(exit_label))
+                exit_row = data.iloc[exit_idx]
                 exit_price = stop_price
                 stop_hit = True
             else:
-                exit_row = future.iloc[-1]
+                exit_idx = min(entry_idx + horizon, len(data) - 1)
+                exit_row = data.iloc[exit_idx]
                 exit_price = _as_float(exit_row.get("close"), entry)
                 stop_hit = False
             ret = exit_price / entry - 1
@@ -211,11 +247,14 @@ def _run_strategy_backtest(one: pd.DataFrame, ticker: str, strategy: str, holdin
             stop_price = entry * (1 + stop_pct)
             stop_hits = future[future["high"] >= stop_price]
             if not stop_hits.empty:
-                exit_row = stop_hits.iloc[0]
+                exit_label = stop_hits.index[0]
+                exit_idx = int(data.index.get_loc(exit_label))
+                exit_row = data.iloc[exit_idx]
                 exit_price = stop_price
                 stop_hit = True
             else:
-                exit_row = future.iloc[-1]
+                exit_idx = min(entry_idx + horizon, len(data) - 1)
+                exit_row = data.iloc[exit_idx]
                 exit_price = _as_float(exit_row.get("close"), entry)
                 stop_hit = False
             ret = entry / exit_price - 1 if exit_price > 0 else 0.0
@@ -230,11 +269,14 @@ def _run_strategy_backtest(one: pd.DataFrame, ticker: str, strategy: str, holdin
                 "return_pct": float(ret),
                 "stop_hit": bool(stop_hit),
                 "signal": signal,
+                "direction": int(direction),
             }
         )
-    trades_df = pd.DataFrame(trades)
+        last_exit_idx = exit_idx
+        entry_idx = exit_idx + cooldown_bars + 1
+    trades_df = pd.DataFrame(trades, columns=_empty_trades().columns) if trades else _empty_trades()
     latest_signal = _signal_from_row(data.iloc[-1], strategy)[1] if not data.empty else "NO_DATA"
-    return _summary_row(ticker, strategy, holding_days, risk_tolerance_pct, trades_df, latest_signal), trades_df
+    return _summary_row(ticker, strategy, horizon, risk_tolerance_pct, trades_df, latest_signal), trades_df
 
 
 def _summary_row(ticker: str, strategy: str, holding_days: int, risk_tolerance_pct: float, trades: pd.DataFrame, latest_signal: str) -> dict[str, Any]:
@@ -352,3 +394,321 @@ def build_order_strategy_workbench(
     orders = _merge_order_recommendations(summary_df, next_day_order_plan, risk_tolerance_pct)
     scores = summary_df.pivot_table(index="ticker", columns="strategy_label", values="strategy_edge_score", aggfunc="max").reset_index() if not summary_df.empty else pd.DataFrame()
     return {"summary": summary_df, "trades": trades_df, "order_recommendations": orders, "strategy_scores": scores}
+
+
+def _empty_strategy_visualization_payload(ticker: str) -> dict[str, Any]:
+    fig = make_subplots(
+        rows=5,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.035,
+        row_heights=[0.46, 0.13, 0.13, 0.13, 0.15],
+        subplot_titles=(f"{ticker} Strategy Price Signals", "Volume", "RSI14", "MACD", "Equity / Drawdown"),
+        specs=[[{}], [{}], [{}], [{}], [{"secondary_y": True}]],
+    )
+    return {
+        "figure": fig,
+        "equity_curve": pd.DataFrame(columns=["date", "strategy", "equity"]),
+        "drawdown_curve": pd.DataFrame(columns=["date", "strategy", "drawdown_pct"]),
+        "trade_markers": pd.DataFrame(columns=["date", "price", "strategy", "side", "return_pct"]),
+        "strategy_metrics": pd.DataFrame(columns=["strategy", "trade_count", "win_rate", "cumulative_return_pct", "max_drawdown_pct", "profit_factor"]),
+    }
+
+
+def _strategy_trades_for_selection(trades: pd.DataFrame, ticker: str, strategies: Iterable[str]) -> pd.DataFrame:
+    if trades.empty or "ticker" not in trades.columns:
+        return _empty_trades()
+    selected = {str(s) for s in strategies}
+    out = trades[trades["ticker"].astype(str).str.upper() == str(ticker).upper()].copy()
+    if "strategy" in out.columns and selected and "COMPOSITE" not in selected:
+        out = out[out["strategy"].astype(str).isin(selected)]
+    elif "strategy" in out.columns and selected and "COMPOSITE" in selected:
+        out = out[out["strategy"].astype(str).isin(selected - {"COMPOSITE"})]
+    return out.sort_values("exit_date") if "exit_date" in out.columns else out
+
+
+def _equity_and_drawdown_from_trades(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if trades.empty:
+        return (
+            pd.DataFrame(columns=["date", "strategy", "equity"]),
+            pd.DataFrame(columns=["date", "strategy", "drawdown_pct"]),
+            pd.DataFrame(columns=["strategy", "trade_count", "win_rate", "cumulative_return_pct", "max_drawdown_pct", "profit_factor"]),
+        )
+    rows_equity: list[dict[str, Any]] = []
+    rows_drawdown: list[dict[str, Any]] = []
+    rows_metrics: list[dict[str, Any]] = []
+    grouped = list(trades.groupby("strategy")) if "strategy" in trades.columns else [("COMPOSITE", trades)]
+    if len(grouped) > 1:
+        grouped.append(("COMPOSITE", trades))
+    for strategy, group in grouped:
+        group = group.sort_values("exit_date").copy()
+        returns = pd.to_numeric(group.get("return_pct"), errors="coerce").fillna(0.0)
+        equity = (1 + returns).cumprod()
+        peak = equity.cummax()
+        drawdown = equity / peak - 1
+        for idx, (_gidx, row) in enumerate(group.iterrows()):
+            date = row.get("exit_date", row.get("entry_date"))
+            rows_equity.append({"date": date, "strategy": strategy, "equity": float(equity.iloc[idx])})
+            rows_drawdown.append({"date": date, "strategy": strategy, "drawdown_pct": float(drawdown.iloc[idx] * 100)})
+        rows_metrics.append(
+            {
+                "strategy": strategy,
+                "trade_count": int(len(group)),
+                "win_rate": float((returns > 0).mean()) if len(group) else np.nan,
+                "cumulative_return_pct": float((equity.iloc[-1] - 1) * 100) if len(group) else 0.0,
+                "max_drawdown_pct": float(drawdown.min() * 100) if len(group) else 0.0,
+                "profit_factor": _profit_factor(returns),
+            }
+        )
+    return pd.DataFrame(rows_equity), pd.DataFrame(rows_drawdown), pd.DataFrame(rows_metrics)
+
+
+def _trade_markers_from_trades(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame(columns=["date", "price", "strategy", "side", "return_pct"])
+    rows: list[dict[str, Any]] = []
+    for _, row in trades.iterrows():
+        strategy = row.get("strategy", "")
+        ret = _as_float(row.get("return_pct"), 0.0)
+        direction = int(_as_float(row.get("direction", 1), 1))
+        if direction < 0:
+            rows.append({"date": row.get("entry_date"), "price": row.get("entry_price"), "strategy": strategy, "side": "SELL", "return_pct": ret})
+            rows.append({"date": row.get("exit_date"), "price": row.get("exit_price"), "strategy": strategy, "side": "BUY_TO_COVER", "return_pct": ret})
+        else:
+            rows.append({"date": row.get("entry_date"), "price": row.get("entry_price"), "strategy": strategy, "side": "BUY", "return_pct": ret})
+            rows.append({"date": row.get("exit_date"), "price": row.get("exit_price"), "strategy": strategy, "side": "SELL", "return_pct": ret})
+    return pd.DataFrame(rows)
+
+
+def _add_trade_lifecycle_annotations(fig: go.Figure, trades: pd.DataFrame, data: pd.DataFrame) -> None:
+    """Draw entry/exit vertical lines plus per-trade PnL connectors on row 1.
+
+    Marker-only strategy charts are hard to scan.  These annotations make each
+    simulated position visible as a lifecycle: entry line, exit line, and the
+    dashed connector between the two prices.  Green means the completed trade
+    made money; red means it lost money.  This is about realized backtest PnL,
+    not SHAP/factor contribution direction.
+    """
+    if trades.empty or data.empty:
+        return
+    price_min = _as_float(pd.to_numeric(data["low"], errors="coerce").min(), np.nan)
+    price_max = _as_float(pd.to_numeric(data["high"], errors="coerce").max(), np.nan)
+    if not np.isfinite(price_min) or not np.isfinite(price_max) or price_min >= price_max:
+        return
+    plotted_trade_names: set[str] = set()
+    for _, row in trades.iterrows():
+        entry_date = row.get("entry_date")
+        exit_date = row.get("exit_date")
+        entry_price = _as_float(row.get("entry_price"), np.nan)
+        exit_price = _as_float(row.get("exit_price"), np.nan)
+        ret = _as_float(row.get("return_pct"), np.nan)
+        if pd.isna(entry_date) or pd.isna(exit_date) or not np.isfinite(entry_price) or not np.isfinite(exit_price):
+            continue
+        win = bool(np.isfinite(ret) and ret >= 0)
+        color = "#16a34a" if win else "#dc2626"
+        fill = "rgba(22,163,74,0.08)" if win else "rgba(220,38,38,0.08)"
+        pnl_name = "Trade PnL Win" if win else "Trade PnL Loss"
+        fig.add_shape(
+            type="line",
+            x0=entry_date,
+            x1=entry_date,
+            y0=price_min,
+            y1=price_max,
+            line=dict(color="#0f172a", width=1, dash="dot"),
+            name="Trade Entry Vertical Line",
+            row=1,
+            col=1,
+        )
+        fig.add_shape(
+            type="line",
+            x0=exit_date,
+            x1=exit_date,
+            y0=price_min,
+            y1=price_max,
+            line=dict(color=color, width=1, dash="dot"),
+            name="Trade Exit Vertical Line",
+            row=1,
+            col=1,
+        )
+        fig.add_shape(
+            type="rect",
+            x0=entry_date,
+            x1=exit_date,
+            y0=min(entry_price, exit_price),
+            y1=max(entry_price, exit_price),
+            fillcolor=fill,
+            line=dict(width=0),
+            layer="below",
+            name="Trade Profit Area" if win else "Trade Loss Area",
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[entry_date, exit_date],
+                y=[entry_price, exit_price],
+                mode="lines+markers",
+                name=pnl_name,
+                legendgroup=pnl_name,
+                showlegend=pnl_name not in plotted_trade_names,
+                line=dict(color=color, width=2, dash="dash"),
+                marker=dict(size=7, color=color),
+                customdata=[[row.get("strategy", ""), ret], [row.get("strategy", ""), ret]],
+                hovertemplate="%{customdata[0]} trade<br>%{x}<br>price=%{y:.2f}<br>PnL=%{customdata[1]:.2%}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+        plotted_trade_names.add(pnl_name)
+        mid_price = (entry_price + exit_price) / 2
+        fig.add_annotation(
+            x=exit_date,
+            y=mid_price,
+            text=f"{ret:+.2%}" if np.isfinite(ret) else "n/a",
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor=color,
+            font=dict(color=color, size=11),
+            bgcolor="rgba(255,255,255,0.78)",
+            bordercolor=color,
+            borderwidth=1,
+            row=1,
+            col=1,
+        )
+
+
+def build_strategy_visualization_payload(
+    prices: pd.DataFrame,
+    trades: pd.DataFrame,
+    *,
+    ticker: str,
+    strategies: Iterable[str] = ("COMPOSITE",),
+    order_recommendations: pd.DataFrame | None = None,
+    show_smc: bool = True,
+) -> dict[str, Any]:
+    """Build a strategy visualization payload for the Streamlit workbench.
+
+    The figure keeps strategy-level evidence in one place: price candles, indicator
+    traces, buy/sell markers from the selected strategy trades, optional SMC zones,
+    and an equity/drawdown panel. It is research-only and does not place orders.
+    """
+    if prices.empty or "ticker" not in prices.columns:
+        return _empty_strategy_visualization_payload(ticker)
+    one = prices[prices["ticker"].astype(str).str.upper() == str(ticker).upper()].sort_values("date").copy()
+    if one.empty:
+        return _empty_strategy_visualization_payload(ticker)
+    data = add_indicators(one)
+    selected_trades = _strategy_trades_for_selection(trades, ticker, strategies)
+    equity, drawdown, metrics = _equity_and_drawdown_from_trades(selected_trades)
+    markers = _trade_markers_from_trades(selected_trades)
+
+    fig = make_subplots(
+        rows=5,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.035,
+        row_heights=[0.46, 0.13, 0.13, 0.13, 0.15],
+        subplot_titles=(f"{ticker} Strategy Price Signals", "Volume", "RSI14", "MACD", "Equity / Drawdown"),
+        specs=[[{}], [{}], [{}], [{}], [{"secondary_y": True}]],
+    )
+    fig.add_trace(
+        go.Candlestick(
+            x=data["date"], open=data["open"], high=data["high"], low=data["low"], close=data["close"], name="K線",
+            increasing_line_color="#16a34a", decreasing_line_color="#dc2626",
+        ),
+        row=1,
+        col=1,
+    )
+    for col, name, color in [("sma_20", "SMA20", "#2563eb"), ("sma_60", "SMA60", "#9333ea"), ("bb_upper_20", "Bollinger Upper", "#94a3b8"), ("bb_lower_20", "Bollinger Lower", "#94a3b8")]:
+        if col in data.columns:
+            fig.add_trace(go.Scatter(x=data["date"], y=data[col], mode="lines", name=name, line=dict(color=color, width=1.2)), row=1, col=1)
+    volume_colors = np.where(pd.to_numeric(data["close"], errors="coerce") >= pd.to_numeric(data["open"], errors="coerce"), "rgba(22,163,74,0.45)", "rgba(220,38,38,0.45)")
+    fig.add_trace(go.Bar(x=data["date"], y=data["volume"], name="Volume", marker_color=volume_colors), row=2, col=1)
+    if "rsi_14" in data.columns:
+        fig.add_trace(go.Scatter(x=data["date"], y=data["rsi_14"], mode="lines", name="RSI14", line=dict(color="#f59e0b")), row=3, col=1)
+        fig.add_hline(y=70, line_dash="dot", line_color="#ef4444", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color="#22c55e", row=3, col=1)
+    if "macd" in data.columns:
+        fig.add_trace(go.Scatter(x=data["date"], y=data["macd"], mode="lines", name="MACD", line=dict(color="#2563eb")), row=4, col=1)
+    if "macd_signal" in data.columns:
+        fig.add_trace(go.Scatter(x=data["date"], y=data["macd_signal"], mode="lines", name="MACD Signal", line=dict(color="#f97316")), row=4, col=1)
+    if "macd_hist" in data.columns:
+        fig.add_trace(go.Bar(x=data["date"], y=data["macd_hist"], name="MACD Hist", marker_color="#64748b"), row=4, col=1)
+
+    if order_recommendations is not None and not order_recommendations.empty:
+        rec = order_recommendations[order_recommendations["ticker"].astype(str).str.upper() == str(ticker).upper()].head(1)
+        if not rec.empty:
+            row = rec.iloc[0]
+            x0, x1 = data["date"].iloc[0], data["date"].iloc[-1]
+            for low_col, high_col, label, color in [("buy_low", "buy_high", "Strategy Buy Zone", "rgba(22,163,74,0.16)"), ("sell_low", "sell_high", "Strategy Sell Zone", "rgba(220,38,38,0.14)")]:
+                y0 = _as_float(row.get(low_col), np.nan)
+                y1 = _as_float(row.get(high_col), np.nan)
+                if np.isfinite(y0) and np.isfinite(y1):
+                    fig.add_shape(type="rect", xref="x", yref="y", x0=x0, x1=x1, y0=min(y0, y1), y1=max(y0, y1), fillcolor=color, line=dict(width=0), layer="below", row=1, col=1)
+                    fig.add_trace(go.Scatter(x=[x1], y=[(y0 + y1) / 2], mode="markers+text", name=label, text=[label], marker=dict(size=8, color=color.replace("0.16", "0.85").replace("0.14", "0.85"))), row=1, col=1)
+            for price_col, label, color in [("stop_loss", "Strategy Stop", "#dc2626"), ("take_profit", "Strategy Take Profit", "#16a34a")]:
+                y = _as_float(row.get(price_col), np.nan)
+                if np.isfinite(y):
+                    fig.add_hline(y=y, line_dash="dash", line_color=color, annotation_text=label, row=1, col=1)
+
+    if not markers.empty:
+        buys = markers[markers["side"] == "BUY"]
+        sells = markers[markers["side"] == "SELL"]
+        covers = markers[markers["side"] == "BUY_TO_COVER"]
+        fig.add_trace(go.Scatter(x=buys["date"], y=buys["price"], mode="markers", name="Strategy Buy Entry", marker=dict(symbol="triangle-up", size=12, color="#16a34a", line=dict(color="#052e16", width=1)), customdata=buys[["strategy", "return_pct"]], hovertemplate="%{x}<br>%{customdata[0]} buy entry<br>price=%{y:.2f}<br>trade ret=%{customdata[1]:.2%}<extra></extra>"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=sells["date"], y=sells["price"], mode="markers", name="Strategy Sell / Short Entry", marker=dict(symbol="triangle-down", size=12, color="#dc2626", line=dict(color="#450a0a", width=1)), customdata=sells[["strategy", "return_pct"]], hovertemplate="%{x}<br>%{customdata[0]} sell / short entry<br>price=%{y:.2f}<br>trade ret=%{customdata[1]:.2%}<extra></extra>"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=covers["date"], y=covers["price"], mode="markers", name="Strategy Buy-to-Cover Exit", marker=dict(symbol="circle", size=9, color="#22c55e", line=dict(color="#052e16", width=1)), customdata=covers[["strategy", "return_pct"]], hovertemplate="%{x}<br>%{customdata[0]} buy-to-cover exit<br>price=%{y:.2f}<br>trade ret=%{customdata[1]:.2%}<extra></extra>"), row=1, col=1)
+        _add_trade_lifecycle_annotations(fig, selected_trades, data)
+
+    if show_smc:
+        smc_context = build_smc_context(data)
+        # Keep legend entries visible even when the current sample has no SMC objects.
+        fig.add_trace(go.Scatter(x=[], y=[], mode="markers", name="SMC Liquidity", marker=dict(color="#0ea5e9", size=8)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=[], y=[], mode="markers", name="SMC Order Block", marker=dict(color="#a855f7", size=8)), row=1, col=1)
+        liquidity = smc_context.get("liquidity", pd.DataFrame())
+        if isinstance(liquidity, pd.DataFrame) and not liquidity.empty:
+            for _, row in liquidity.tail(8).iterrows():
+                y = _as_float(row.get("level", row.get("price")), np.nan)
+                if np.isfinite(y):
+                    fig.add_hline(y=y, line_dash="dot", line_color="#0ea5e9", annotation_text="SMC Liquidity", row=1, col=1)
+            fig.add_trace(go.Scatter(x=[data["date"].iloc[-1]], y=[data["close"].iloc[-1]], mode="markers", name="SMC Liquidity", marker=dict(color="#0ea5e9", size=1)), row=1, col=1)
+        order_blocks = smc_context.get("order_blocks", pd.DataFrame())
+        if isinstance(order_blocks, pd.DataFrame) and not order_blocks.empty:
+            for _, row in order_blocks.tail(6).iterrows():
+                y0 = _as_float(row.get("bottom", row.get("low", row.get("y0"))), np.nan)
+                y1 = _as_float(row.get("top", row.get("high", row.get("y1"))), np.nan)
+                if np.isfinite(y0) and np.isfinite(y1):
+                    fig.add_shape(type="rect", xref="x", yref="y", x0=data["date"].iloc[max(0, len(data) - 80)], x1=data["date"].iloc[-1], y0=min(y0, y1), y1=max(y0, y1), fillcolor="rgba(168,85,247,0.12)", line=dict(color="rgba(168,85,247,0.45)", width=1), layer="below", row=1, col=1)
+            fig.add_trace(go.Scatter(x=[data["date"].iloc[-1]], y=[data["close"].iloc[-1]], mode="markers", name="SMC Order Block", marker=dict(color="#a855f7", size=1)), row=1, col=1)
+
+    if not equity.empty:
+        for strategy, group in equity.groupby("strategy"):
+            fig.add_trace(go.Scatter(x=group["date"], y=group["equity"], mode="lines", name=f"Equity Curve {strategy}" if strategy != "COMPOSITE" else "Equity Curve", line=dict(width=2)), row=5, col=1, secondary_y=False)
+    else:
+        fig.add_trace(go.Scatter(x=[], y=[], mode="lines", name="Equity Curve"), row=5, col=1, secondary_y=False)
+    if not drawdown.empty:
+        comp = drawdown[drawdown["strategy"].astype(str) == "COMPOSITE"] if "COMPOSITE" in set(drawdown["strategy"].astype(str)) else drawdown
+        fig.add_trace(go.Scatter(x=comp["date"], y=comp["drawdown_pct"], mode="lines", fill="tozeroy", name="Drawdown", line=dict(color="#dc2626")), row=5, col=1, secondary_y=True)
+    else:
+        fig.add_trace(go.Scatter(x=[], y=[], mode="lines", name="Drawdown"), row=5, col=1, secondary_y=True)
+    fig.update_layout(
+        height=950,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=30, r=30, t=80, b=30),
+    )
+    fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot")
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    fig.update_yaxes(title_text="RSI", row=3, col=1)
+    fig.update_yaxes(title_text="MACD", row=4, col=1)
+    fig.update_yaxes(title_text="Equity", row=5, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="Drawdown %", row=5, col=1, secondary_y=True)
+    return {
+        "figure": fig,
+        "equity_curve": equity,
+        "drawdown_curve": drawdown,
+        "trade_markers": markers,
+        "strategy_metrics": metrics,
+    }

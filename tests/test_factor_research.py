@@ -146,7 +146,7 @@ def test_factor_research_tab_is_button_triggered_in_streamlit_app():
     assert "build_factor_research_report" in app_source
     assert "factor_research_report" in app_source
     assert "勝率與 AUC 趨勢" in app_source
-    assert "每檔股票 × horizon 表現熱力圖" in app_source
+    assert "每檔股票 × 預測天數表現熱力圖" in app_source
     assert "build_ticker_horizon_metric_matrix" in app_source
     assert "熱力圖指標" in app_source
     assert "build_horizon_metric_trends" in app_source

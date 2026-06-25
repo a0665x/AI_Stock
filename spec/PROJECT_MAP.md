@@ -11,8 +11,10 @@
 - 市場熱力圖：以格子大小呈現活躍度、顏色呈現近 5 日報酬，快速找出強弱標的
 - Smart Tuning Lite：按鈕觸發掃描持有天數、出場規則與風險寬度，依報酬、勝率、Profit Factor、回撤與停損率排名
 - 智能交易視覺中心 / Trade Vision Center：整合進階 K 線、市場結構、BOS/ChoCH、支撐壓力 / 供需區、Entry/SL/TP、Risk/Reward box、MTF Matrix、Signal Score 與 AI Trade Narrative
-- 隔日掛單計畫 / Next-Day Order Planner：基於持倉、決策報表與最近日內波動，輸出隔日買進 / 賣出區、戰術停損、硬停損、觸及機率與建議單型；整合 15m / 1h / 1d SMC 訊號產生 SMC 信心分數、買進急迫度、賣出急迫度與優先處理熱力表；表格 row 可聯動下方 swing trading 技術圖，顯示 K 線十字游標、布林、RSI、MACD、成交量、K 線型態、smartmoneyconcepts 優先 / 內建 fallback 的 FVG/IFVG、Order Block、Liquidity、Swing High/Low、SFP 假突破、BOS/ChoCH 結構突破與 UKF-style 去噪動能；研究輔助，不自動下單
-- 隔日策略工作台 / Next-Day Strategy Workbench：按鈕觸發的策略適配檢查；使用者先選單檔或全選、設定風險耐受度、指定 1/5/10/15/30 天持有基準、勾選布林/SMC/UKF/KD-MACD/SHAP 因子代理策略與回測期間，輸出勝率、Profit Factor、回撤、策略適配分數、BUY/SELL/WAIT 迫切度與最終買賣停損區間
+- 隔日掛單計畫 / Next-Day Order Planner：基於持倉、決策報表與最近日內波動，輸出隔日買進 / 賣出區、戰術停損、硬停損、觸及機率與建議單型；整合 15m / 1h / 1d SMC 訊號產生 SMC 信心分數、買進急迫度、賣出急迫度與優先處理熱力表；若已執行隔日策略工作台，會回寫最終推薦來源/方向/策略/適配分數與最終買賣停損停利區間；表格 row 可聯動下方 swing trading 技術圖，顯示 K 線十字游標、布林、RSI、MACD、成交量、K 線型態、smartmoneyconcepts 優先 / 內建 fallback 的 FVG/IFVG、Order Block、Liquidity、Swing High/Low、SFP 假突破、BOS/ChoCH 結構突破與 UKF-style 去噪動能；研究輔助，不自動下單
+- 隔日策略工作台 / Next-Day Strategy Workbench：按鈕觸發的策略適配檢查；使用者先選單檔或全選、設定風險耐受度、指定 1/5/10/15/30 天持有基準、勾選布林/SMC/UKF/KD-MACD/SHAP 因子代理策略與回測期間，輸出勝率、Profit Factor、回撤、策略適配分數、BUY/SELL/WAIT 迫切度與最終買賣停損區間；同頁可用股票下拉與策略多選檢視策略買賣點、每筆交易垂直進出場虛線、綠/紅獲利虧損連線、策略買賣區、SMC overlay、權益曲線、回撤曲線與策略績效摘要；策略適配分數顏色代表高/中/弱適配，不是 SHAP 正負；左側個人交易偏好可記錄不做當沖、每日每股掛單次數、每次股數/張數與習慣持有天數；結果會合併回隔日掛單計畫作為最終人工掛單區間
+- Sidebar 重構：左側只保留資料來源、股票清單、歷史區間、K 線週期、決策天數、個人交易偏好、CSV 上傳與手動刷新等全域設定；回測/Smart Tuning、因子研究、價格圖成交量等頁面專屬控制項移到各自頁籤內
+- 研究與訓練資料 / Training Data Center：整理每日價格、技術指標、SMC 信號、UKF/K 線型態、未來 1/3/5/10 天報酬與漲跌目標，並排序最有相關性的前 N 個欄位，作為未來 AI model 預估三天趨勢的資料基礎
 - 技術分析 snapshot
 - 多股票報酬相關性分析（stock relationship / shop analysis）
 - 不使用黑箱 AI 的第一版走勢估計：ARIMA 優先、sklearn robust regression fallback
@@ -31,8 +33,9 @@
 - [`map.md`](./map.md)：簡化地圖
 - [`project_herness.md`](./project_herness.md)：Hermes 啟動摘要
 - [`tutor_guide.md`](./tutor_guide.md)：新手導讀；解釋 UI 操作、技術指標、Kelly、回測、因子研究與買賣觀察流程
-- [`next_day_order_planner_spec.md`](./next_day_order_planner_spec.md)：隔日掛單計畫完整 spec；說明可成交價位、SMC 多週期信心分數、優先處理熱力表、row-linked 技術圖與圖例說明
-- [`next_day_strategy_workbench_spec.md`](./next_day_strategy_workbench_spec.md)：隔日策略工作台 spec；說明股票範圍、持有天數、風險耐受度、策略勾選、回測期間、策略適配分數與最終掛單區間
+- [`next_day_order_planner_spec.md`](./next_day_order_planner_spec.md)：隔日掛單計畫完整 spec；說明可成交價位、SMC 多週期信心分數、優先處理熱力表、策略工作台最終推薦回寫、row-linked 技術圖與圖例說明
+- [`next_day_strategy_workbench_spec.md`](./next_day_strategy_workbench_spec.md)：隔日策略工作台 spec；說明股票範圍、持有天數、風險耐受度、策略勾選、回測期間、策略適配分數、策略買賣點視覺化、每筆交易垂直線/PnL 連線、策略適配顏色說明、個人交易偏好、權益/回撤曲線、最終掛單區間與回寫隔日掛單計畫
+- [`ui_simplification_training_data_goal.md`](./ui_simplification_training_data_goal.md)：/goal 式持續優化目標；說明頁籤收斂、等待確認語意、horizon 改為預測幾天後、Training Data contract 與 subagent 使用者視角 QA 規則
 - [`references/original-engine-notes.md`](./references/original-engine-notes.md)：原始交易引擎可借鏡點
 - [`task_understandings/2026-05-25_ai_stock_bootstrap.md`](./task_understandings/2026-05-25_ai_stock_bootstrap.md)：初始建立紀錄
 - [`task_understandings/2026-06-19_dashboard_analysis_expansion.md`](./task_understandings/2026-06-19_dashboard_analysis_expansion.md)：UI / 分析 / 預測擴展紀錄
@@ -52,7 +55,8 @@
 - [`task_understandings/2026-06-24_swing_smc_signal_overlays.md`](./task_understandings/2026-06-24_swing_smc_signal_overlays.md)：隔日掛單技術圖新增 FVG/IFVG、Swing High/Low、SFP、BOS/ChoCH 與市場結構 overlay
 - [`task_understandings/2026-06-24_smartmoneyconcepts_adapter.md`](./task_understandings/2026-06-24_smartmoneyconcepts_adapter.md)：smartmoneyconcepts adapter；隔日掛單技術圖優先使用第三方 SMC engine 計算 FVG、Order Block、Liquidity、Swing、BOS/ChoCH，失敗時 fallback 內建規則
 - [`task_understandings/2026-06-24_smc_confidence_mtf_order_urgency.md`](./task_understandings/2026-06-24_smc_confidence_mtf_order_urgency.md)：隔日掛單計畫加入 15m / 1h / 1d SMC 信心分數、買賣急迫度與優先處理熱力表
-- [`task_understandings/2026-06-25_next_day_strategy_workbench.md`](./task_understandings/2026-06-25_next_day_strategy_workbench.md)：隔日策略工作台；可選股票、風險耐受度、持有天數、策略欄位、回測期間與最終掛單區間
+- [`task_understandings/2026-06-25_next_day_strategy_workbench.md`](./task_understandings/2026-06-25_next_day_strategy_workbench.md)：隔日策略工作台；可選股票、可承受停損幅度、預計持有天數、策略選擇、歷史驗證期間與最終掛單區間
+- [`task_understandings/2026-06-25_ui_simplification_training_data.md`](./task_understandings/2026-06-25_ui_simplification_training_data.md)：研究與訓練資料中心；建立 daily training data、top correlated columns 與 UI 名詞簡化紀錄
 
 ## GitHub 文件入口
 - `README.md`：預設英文 GitHub landing page
@@ -89,9 +93,11 @@
 - `src/ai_stock/portfolio.py`
   - 本機私有持倉讀取與停損、停利、加碼限價、減碼 / 出清檢查規劃；支援 `my_stocks.json` 與既有拼字相容檔 `my_sotcks.json`，不會自動下單
 - `src/ai_stock/order_planner.py`
-  - 隔日掛單研究規劃：用持倉、決策報表與最近 20 日日內波動估算可成交買賣區、戰術停損、硬停損、觸及機率與建議單型；同時整合 15m / 1h / 1d SMC 訊號，輸出 SMC 信心分數、買進急迫度、賣出急迫度與優先處理分數；優先處理熱力表以 pandas Styler / `st.dataframe` 渲染避免 HTML row 原始碼外露；不連券商、不自動下單
+  - 隔日掛單研究規劃：用持倉、決策報表與最近 20 日日內波動估算可成交買賣區、戰術停損、硬停損、觸及機率與建議單型；同時整合 15m / 1h / 1d SMC 訊號，輸出 SMC 信心分數、買進急迫度、賣出急迫度與優先處理分數；可合併隔日策略工作台結果，回寫最終來源/方向/策略/買賣停損停利區間；優先處理熱力表以 pandas Styler / `st.dataframe` 渲染避免 HTML row 原始碼外露；不連券商、不自動下單
 - `src/ai_stock/order_strategy_workbench.py`
-  - 隔日策略工作台：按鈕觸發比較布林、SMC、UKF 動能、KD/MACD、SHAP 因子代理策略；依選定股票、持有天數、風險耐受度與回測期間輸出策略勝率、Profit Factor、回撤、適配分數、BUY/SELL/WAIT 迫切度與最終買賣停損區間；不連券商、不自動下單
+  - 隔日策略工作台：按鈕觸發比較布林、SMC、UKF 動能、KD/MACD、SHAP 因子代理策略；依選定股票、持有天數、風險耐受度與回測期間輸出策略勝率、Profit Factor、回撤、適配分數、BUY/SELL/WAIT 迫切度與最終買賣停損區間；並產生策略買賣點視覺化 payload，包含價格 K 線、非重疊交易狀態機買賣點、每筆交易垂直進出場線、綠/紅 PnL 連線與盈虧區塊、策略買賣區、可選 SMC overlay、權益曲線、回撤曲線與策略績效摘要；結果可回寫到隔日掛單計畫成為最終人工掛單區間；不連券商、不自動下單
+- `src/ai_stock/training_data.py`
+  - 分析結果數據 / Training Data：把每日 OHLCV、技術指標、SMC flags、UKF 動能、K 線型態與未來 N 天 target 合併成 model-ready DataFrame，並用相關性排序最有用欄位；作為未來三天趨勢 AI model 的資料基礎，不直接訓練模型
 - `src/ai_stock/swing_order_chart.py`
   - 隔日掛單計畫下方 row 聯動技術圖：K 線、布林、RSI、MACD、成交量、K 線型態、FVG/IFVG 失衡區、Order Block、Liquidity、Swing High/Low、SFP 假突破、BOS/ChoCH、市場結構、掛單區、戰術/硬停損與 UKF-style 去噪動能
 - `src/ai_stock/smc_adapter.py`

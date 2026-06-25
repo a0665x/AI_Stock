@@ -35,6 +35,17 @@ _ORDER_COLUMNS = [
     "suggested_order_type",
     "suggested_action",
     "reason",
+    "final_recommendation_source",
+    "final_side",
+    "final_strategy",
+    "final_strategy_edge_score",
+    "final_buy_low",
+    "final_buy_high",
+    "final_sell_low",
+    "final_sell_high",
+    "final_stop_loss",
+    "final_take_profit",
+    "final_reason",
 ]
 
 _SMC_SIGNAL_COLUMNS = [
@@ -297,6 +308,70 @@ def augment_order_plan_with_smc(plan: pd.DataFrame, smc_signals: pd.DataFrame | 
         out.at[idx, "sell_urgency_score"] = sell_urgency
         out.at[idx, "priority_score"] = max(buy_urgency, sell_urgency)
     return out.reindex(columns=[c for c in _ORDER_COLUMNS if c in out.columns])
+
+
+def _base_final_fields(row: pd.Series) -> dict[str, Any]:
+    return {
+        "final_recommendation_source": "BASE_ORDER_PLAN",
+        "final_side": "BUY" if str(row.get("suggested_order_type", "")) in {"BUY_LIMIT", "ADD_LIMIT"} else "SELL" if str(row.get("suggested_order_type", "")) in {"TAKE_PROFIT_LIMIT", "REBOUND_REDUCE_LIMIT", "REDUCE_OR_AVOID", "PROTECTIVE_STOP", "PROTECT_PROFIT_STOP"} else "WAIT",
+        "final_strategy": "",
+        "final_strategy_edge_score": np.nan,
+        "final_buy_low": _as_float(row.get("next_day_buy_low"), np.nan),
+        "final_buy_high": _as_float(row.get("next_day_buy_high"), np.nan),
+        "final_sell_low": _as_float(row.get("next_day_sell_low"), np.nan),
+        "final_sell_high": _as_float(row.get("next_day_sell_high"), np.nan),
+        "final_stop_loss": _as_float(row.get("tactical_stop_price"), np.nan),
+        "final_take_profit": _as_float(row.get("strategy_take_profit_price"), _as_float(row.get("next_day_sell_low"), np.nan)),
+        "final_reason": str(row.get("reason", "")),
+    }
+
+
+def integrate_strategy_recommendations_into_order_plan(order_plan: pd.DataFrame, strategy_orders: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Merge Strategy Order Workbench recommendations into the next-day order plan.
+
+    The original next-day order plan remains the safe fallback. When the strategy
+    workbench has a row for a ticker, its historically better strategy levels
+    become the explicit final buy/sell/stop/take-profit ranges while the base
+    plan's SMC/touch-probability fields stay visible for context.
+    """
+    if order_plan.empty:
+        return order_plan.reindex(columns=_ORDER_COLUMNS)
+    out = order_plan.copy()
+    strategy = strategy_orders.copy() if strategy_orders is not None and not strategy_orders.empty else pd.DataFrame(columns=["ticker"])
+    for idx, row in out.iterrows():
+        fields = _base_final_fields(row)
+        ticker = str(row.get("ticker", "")).upper()
+        match = strategy[strategy["ticker"].astype(str).str.upper() == ticker].tail(1) if "ticker" in strategy.columns else pd.DataFrame()
+        if not match.empty:
+            srow = match.iloc[0]
+            strategy_label = str(srow.get("best_strategy_label", srow.get("best_strategy", "")))
+            side = str(srow.get("side", "WAIT") or "WAIT").upper()
+            edge = _as_float(srow.get("strategy_edge_score"), np.nan)
+            urgency = _as_float(srow.get("urgency_score"), np.nan)
+            fields.update(
+                {
+                    "final_recommendation_source": "STRATEGY_WORKBENCH",
+                    "final_side": side if side in {"BUY", "SELL", "WAIT"} else "WAIT",
+                    "final_strategy": strategy_label,
+                    "final_strategy_edge_score": edge,
+                    "final_buy_low": _as_float(srow.get("buy_low"), fields["final_buy_low"]),
+                    "final_buy_high": _as_float(srow.get("buy_high"), fields["final_buy_high"]),
+                    "final_sell_low": _as_float(srow.get("sell_low"), fields["final_sell_low"]),
+                    "final_sell_high": _as_float(srow.get("sell_high"), fields["final_sell_high"]),
+                    "final_stop_loss": _as_float(srow.get("stop_loss"), fields["final_stop_loss"]),
+                    "final_take_profit": _as_float(srow.get("take_profit"), fields["final_take_profit"]),
+                    "final_reason": f"策略工作台推薦：{strategy_label}；{srow.get('reason', '')}".strip(),
+                }
+            )
+            if np.isfinite(urgency):
+                out.at[idx, "priority_score"] = max(_as_float(row.get("priority_score"), 0.0), urgency)
+                if side == "BUY":
+                    out.at[idx, "buy_urgency_score"] = max(_as_float(row.get("buy_urgency_score"), 0.0), urgency)
+                elif side == "SELL":
+                    out.at[idx, "sell_urgency_score"] = max(_as_float(row.get("sell_urgency_score"), 0.0), urgency)
+        for key, value in fields.items():
+            out.at[idx, key] = value
+    return out.reindex(columns=[c for c in _ORDER_COLUMNS if c in out.columns]).sort_values(["priority_score", "ticker"], ascending=[False, True]).reset_index(drop=True)
 
 
 def build_next_day_order_plan(
