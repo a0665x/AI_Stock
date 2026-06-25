@@ -210,6 +210,24 @@ ACTION_BADGE_ZH = {
     "SELL_OR_AVOID": "🔴 減碼/避開",
 }
 ACTION_BADGE = translate_mapping(ACTION_BADGE_ZH, UI_LANG)
+STRATEGY_SIDE_LABELS_ZH = {
+    "BUY": "買進 / 加碼",
+    "SELL": "賣出 / 減碼 / 保護",
+    "WAIT": "等待確認",
+    "HOLD": "等待確認",
+    "HOLD_WAIT": "等待確認",
+    "BUY_WATCH": "偏多觀察",
+    "SELL_OR_AVOID": "減碼 / 避開",
+}
+STRATEGY_SIDE_LABELS = translate_mapping(STRATEGY_SIDE_LABELS_ZH, UI_LANG)
+
+
+def _display_strategy_side(value: object) -> object:
+    if pd.isna(value):
+        return value
+    return STRATEGY_SIDE_LABELS.get(str(value), value)
+
+
 ORDER_ACTION_LABELS_ZH = {
     "REDUCE_OR_EXIT": "減碼 / 出清檢查",
     "STOP_LOSS_ALERT": "停損警示",
@@ -653,6 +671,8 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
             out[col] = out[col].map(probability_labels).fillna(out[col])
     if "suggested_order_type" in out.columns:
         out["suggested_order_type"] = out["suggested_order_type"].map(order_labels).fillna(out["suggested_order_type"])
+    if "final_side" in out.columns:
+        out["final_side"] = out["final_side"].map(_display_strategy_side)
     out["隔日買進區"] = out.apply(lambda row: f"{_fmt_price(row.get('next_day_buy_low'))} - {_fmt_price(row.get('next_day_buy_high'))}", axis=1)
     out["隔日賣出區"] = out.apply(lambda row: f"{_fmt_price(row.get('next_day_sell_low'))} - {_fmt_price(row.get('next_day_sell_high'))}", axis=1)
     if "final_buy_low" in out.columns:
@@ -724,6 +744,38 @@ def _humanize_next_day_order_plan(plan: pd.DataFrame) -> pd.DataFrame:
     return translate_dataframe_columns(out[[c for c in columns if c in out.columns]].rename(columns=rename), UI_LANG)
 
 
+def _render_tradingview_action_board(order_plan: pd.DataFrame) -> None:
+    """Render a compact TradingView-like action board for today's dashboard."""
+    st.subheader("TradingView 式行動清單")
+    st.caption("把交易計畫濃縮成 watchlist：先看最終方向、優先分數、買賣區與下一步。等待確認不是沒有模型或沒有回測，而是目前優勢還不足以追價。")
+    if order_plan.empty:
+        st.info("尚無可用的隔日掛單資料；請確認持倉檔或先到交易計畫頁產生掛單清單。")
+        return
+    top = order_plan.sort_values("priority_score", ascending=False).head(8).copy()
+    board = pd.DataFrame(
+        {
+            "代號": top.get("ticker", pd.Series(dtype=str)).astype(str),
+            "最終方向": top.get("final_side", top.get("action", pd.Series(dtype=str))).fillna("").map(_display_strategy_side).astype(str),
+            "優先分數": top.get("priority_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
+            "買進區": top.apply(lambda row: f"{_fmt_price(row.get('final_buy_low', row.get('next_day_buy_low')))} - {_fmt_price(row.get('final_buy_high', row.get('next_day_buy_high')))}", axis=1),
+            "賣出區": top.apply(lambda row: f"{_fmt_price(row.get('final_sell_low', row.get('next_day_sell_low')))} - {_fmt_price(row.get('final_sell_high', row.get('next_day_sell_high')))}", axis=1),
+            "最終策略": top.get("final_strategy", pd.Series(dtype=str)).fillna("基礎掛單計畫").astype(str),
+            "下一步": top.get("final_side", top.get("action", pd.Series(dtype=str))).fillna("").map(
+                lambda side: "下一步：打開交易計畫或圖表分析" if str(side) in {"BUY", "SELL", "BUY_WATCH", "SELL_OR_AVOID"} else "下一步：等待價格接近區間再確認"
+            ),
+        }
+    )
+    st.dataframe(
+        board,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "優先分數": st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+            "下一步": st.column_config.TextColumn(width="large"),
+        },
+    )
+
+
 def _urgency_alpha(score: float) -> float:
     try:
         value = float(score)
@@ -748,7 +800,7 @@ def _render_next_day_order_heatmap(plan: pd.DataFrame) -> None:
             "標的": top.get("ticker", pd.Series(dtype=str)).astype(str),
             "建議單型": top.get("suggested_order_type", pd.Series(dtype=str)).astype(str),
             "最終策略": top.get("final_strategy", pd.Series(dtype=str)).fillna("").astype(str),
-            "最終方向": top.get("final_side", pd.Series(dtype=str)).fillna("").astype(str),
+            "最終方向": top.get("final_side", pd.Series(dtype=str)).fillna("").map(_display_strategy_side).astype(str),
             "買進急迫度": top.get("buy_urgency_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
             "買進區": top.apply(lambda row: f"{_fmt_price(row.get('final_buy_low', row.get('next_day_buy_low')))} - {_fmt_price(row.get('final_buy_high', row.get('next_day_buy_high')))}", axis=1),
             "賣出急迫度": top.get("sell_urgency_score", pd.Series(dtype=float)).map(lambda v: int(round(_safe_float(v)))),
@@ -934,6 +986,8 @@ def _humanize_strategy_order_recommendations(orders: pd.DataFrame) -> pd.DataFra
     if orders.empty:
         return orders
     out = orders.copy()
+    if "side" in out.columns:
+        out["side"] = out["side"].map(_display_strategy_side)
     out = translate_dataframe_values(out, UI_LANG)
     return translate_dataframe_columns(
         out.rename(
@@ -1622,6 +1676,12 @@ else:
     st.subheader("市場熱力圖")
     st.caption("用格子大小呈現成交量 × 價格活躍度，用顏色呈現近 5 日報酬；適合快速找出目前最熱或最弱的觀察標的。")
     st.plotly_chart(_build_market_heatmap_chart(market_heatmap), use_container_width=True)
+    dashboard_strategy_result = st.session_state.get("order_strategy_workbench_result")
+    dashboard_strategy_orders = pd.DataFrame()
+    if isinstance(dashboard_strategy_result, dict):
+        dashboard_strategy_orders = dashboard_strategy_result.get("order_recommendations", pd.DataFrame())
+    dashboard_order_plan = integrate_strategy_recommendations_into_order_plan(next_day_order_plan, dashboard_strategy_orders)
+    _render_tradingview_action_board(dashboard_order_plan)
 
     with st.expander("怎麼讀這份報表？", expanded=False):
         st.write(
@@ -1629,7 +1689,29 @@ else:
             "Kelly 是半 Kelly 且有上限，適合當倉位參考，不是必然下單比例。"
         )
 
-tab_decision, tab_portfolio, tab_next_day_order, tab_order_strategy, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策總覽", "持倉下單計畫", "隔日掛單計畫", "隔日策略工作台", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "研究與訓練資料"])
+tab_dashboard, tab_orders, tab_charts, tab_strategy_lab, tab_research = st.tabs(["今日決策", "交易計畫", "圖表分析", "策略驗證", "研究中心"])
+tab_decision = tab_dashboard
+tab_portfolio = tab_orders
+tab_next_day_order = tab_orders
+tab_chart = tab_charts
+tab_trade_vision = tab_charts
+tab_order_strategy = tab_strategy_lab
+with tab_dashboard:
+    st.info("本頁回答：今天應優先看哪幾檔？先看優先標的、方向、風險價位；若要執行，下一步到『交易計畫』。")
+with tab_orders:
+    st.info("本頁回答：明天可以怎麼掛單？先處理紅色賣出/保護，再看綠色買進/加碼；下單前到『圖表分析』確認價格位置。")
+with tab_charts:
+    st.info("本頁回答：價格位置適合進場嗎？像 TradingView 一樣先選股票，看 K 線、支撐壓力、SMC、Entry/Stop/Target 是否合理。")
+with tab_strategy_lab:
+    st.info("本頁回答：這個策略近期對這檔股票有效嗎？先單檔驗證勝率、Profit Factor、最大回撤，再決定是否信任掛單訊號。")
+with tab_research:
+    st.info("本頁回答：模型為什麼這樣判斷？研究因子、歸因、相關性與訓練資料；一般下單不需要每天使用。")
+    research_backtest_tab, research_factor_tab, research_attribution_tab, research_relation_tab, research_training_tab = st.tabs(["回測 / Smart Tuning", "因子研究", "SHAP 歸因", "股票關係", "訓練資料"])
+tab_backtest = research_backtest_tab
+tab_factor = research_factor_tab
+tab_attribution = research_attribution_tab
+tab_relation = research_relation_tab
+tab_raw = research_training_tab
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
@@ -1965,7 +2047,7 @@ with tab_order_strategy:
                 )
             if not orders.empty:
                 st.markdown("#### 最佳掛單區間")
-                st.caption("把策略適配分數與隔日掛單可成交區合併，重新排序買賣迫切度。BUY 偏綠色掛買進區，SELL 偏紅色看賣出/減碼/保護區，WAIT 代表仍需等技術圖確認。")
+                st.caption("策略工作台會用回測結果重新排序買賣迫切度。『買進 / 加碼』偏綠色掛買進區，『賣出 / 減碼 / 保護』偏紅色看賣出區，『等待確認』代表仍需等技術圖確認。")
                 order_display = _humanize_strategy_order_recommendations(orders)
                 st.dataframe(
                     order_display,

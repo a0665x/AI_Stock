@@ -4,8 +4,9 @@
 `AI_Stock` 是從 `CH4_CStock_v1_0_5` 提煉出來的新版股票決策輔助專案。
 
 目前定位從「單純選股骨架」擴展為：
+- 專業五頁式流程：`今日決策`、`交易計畫`、`圖表分析`、`策略驗證`、`研究中心`；每頁頂部說明本頁回答的問題與下一步
+- 今日決策：整合今日機會雷達、市場熱力圖、策略健檢卡與 TradingView 式行動清單；行動清單顯示最終方向、優先分數、買賣區、最終策略與下一步，並說明「等待確認」不是沒有模型或回測，而是目前優勢不足以追價
 - 歷史價格 / K 線圖表與互動式 UI；K 線可疊加買進 / 賣出 / 停損參考線與回測 B/S marker
-- 今日機會雷達：以卡片快速摘要每檔股票的決策、Kelly、回測勝率與買賣價位
 - 策略健檢卡：將樣本數、最大回撤、Profit Factor、勝率、累積報酬與 Kelly 狀態轉成新手可讀警訊
 - Watchlist + mini sparkline：左側快速顯示各股票最新收盤、1日漲跌、決策狀態與迷你走勢
 - 市場熱力圖：以格子大小呈現活躍度、顏色呈現近 5 日報酬，快速找出強弱標的
@@ -107,7 +108,7 @@
 - `src/ai_stock/trade_vision.py`
   - 智能交易視覺中心核心：swing/BOS/ChoCH 市場結構、支撐壓力與供需區、premium/discount/equilibrium、Entry/SL/TP 交易計畫、MTF Matrix、Signal Score、AI Trade Narrative、進階 K 線圖與 Risk/Reward box
 - `src/ai_stock/app.py`
-  - Streamlit 互動 UI 與報表下載；yfinance 行情資料快取 1 小時，按「重新抓資料 / 更新分析」才清除記憶體、磁碟行情與下游分析快取；右上角語言選擇可切換繁中 / English / 日本語 / 한국어
+  - Streamlit 互動 UI 與報表下載；主導航收斂為今日決策、交易計畫、圖表分析、策略驗證、研究中心；今日決策含 TradingView 式行動清單與人話版 BUY/SELL/WAIT 顯示；yfinance 行情資料快取 1 小時，按「重新抓資料 / 更新分析」才清除記憶體、磁碟行情與下游分析快取；右上角語言選擇可切換繁中 / English / 日本語 / 한국어
 - `src/ai_stock/i18n.py`
   - UI 多語言字典與 dataframe 欄位翻譯 helper
 - `Dockerfile` / `docker-compose.yml` / `run.sh`

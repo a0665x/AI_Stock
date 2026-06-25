@@ -10,8 +10,8 @@ AI_Stock is a multilingual stock research and decision-support dashboard. It doe
 ## What it can do
 
 - Multilingual Web UI: Traditional Chinese, English, Japanese, and Korean from the selector in the upper-right corner.
-- Interactive historical price and candlestick charts with buy/sell/stop-loss reference lines and backtest B/S markers.
-- Opportunity Radar cards that summarize decision state, Kelly sizing, backtest win rate, return, buy level, and stop-loss level for each ticker.
+- Professional five-page workflow: `Today`, `Trade Plan`, `Charts`, `Strategy Lab`, and `Research Center`; each main page explains the question it answers and the suggested next step.
+- Today Dashboard combines Opportunity Radar, market heatmap, Strategy Health Cards, and a TradingView-style action board. The action board shows final side, priority score, buy/sell ranges, final strategy, and next step; it also clarifies that `WAIT / 等待確認` means the edge is not strong enough to chase, not that the model or backtest is missing.
 - Sidebar Watchlist with mini sparklines, latest close, 1-day move, and decision state for each ticker.
 - Market heatmap that uses tile size for activity and color for recent performance, so users can quickly spot hot or weak names.
 - Smart Tuning Lite: button-triggered scan across holding days, exit rules, and risk widths, ranked by a composite score using return, win rate, Profit Factor, drawdown, and stop-loss hit rate.

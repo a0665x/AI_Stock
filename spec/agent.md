@@ -29,7 +29,7 @@
 - `spec/ui_simplification_training_data_goal.md`：持續 UI 簡化與 Training Data 目標；說明等待確認、horizon 改名、頁籤收斂與 subagent 使用者視角 QA
 - `src/ai_stock/trade_vision.py`：智能交易視覺中心；市場結構、BOS/ChoCH、支撐壓力/供需區、MTF Matrix、Signal Score 與交易計畫視覺化
 - `src/ai_stock/pipeline.py`：程式化分析 pipeline
-- `src/ai_stock/app.py`：Streamlit UI；右上角可切換繁中 / English / 日本語 / 한국어；sidebar 只保留資料來源、股票清單、歷史區間、K 線週期、決策天數、個人交易偏好、CSV 上傳與手動刷新等全域設定，頁面專屬參數留在各頁籤內
+- `src/ai_stock/app.py`：Streamlit UI；主導航已收斂為 `今日決策`、`交易計畫`、`圖表分析`、`策略驗證`、`研究中心`；今日決策含 TradingView 式行動清單與人話版 BUY/SELL/WAIT 顯示；右上角可切換繁中 / English / 日本語 / 한국어；sidebar 只保留資料來源、股票清單、歷史區間、K 線週期、決策天數、個人交易偏好、CSV 上傳與手動刷新等全域設定，頁面專屬參數留在各頁籤內
 - `src/ai_stock/i18n.py`：Web UI 多語言字典與欄位翻譯 helper
 - `spec/tutor_guide.md`：新手導讀，說明如何操作 UI、理解技術指標 / Kelly / 等待確認 / 回測 / 因子研究，以及如何把勝率與 AUC 轉成買賣觀察
 - `spec/neural_ukf_momentum_plan.md`：LSTM/Transformer + UKF 多時序動能模型 TODO / 架構規劃，包含可用外部輿論、事件、宏觀與市場 regime 資料來源

@@ -9,12 +9,14 @@
 - `horizon` 對使用者不直覺；UI 應改說「預測幾天後」或「預計持有天數」。
 
 ## Target page structure
-第一階段保留既有功能，但逐步把頁籤合併為：
-1. 決策總覽：今日雷達、最終需要處理的股票、等待確認原因。
-2. 掛單與策略：隔日掛單計畫 + 隔日策略工作台 + 策略買賣點。
-3. 圖表分析：TradingView-like K 線、SMC、指標 overlays。
-4. 研究中心：回測、因子研究、歸因分析、股票關係。
-5. 分析結果數據 / Training Data：每日完整 feature table 與 top N correlated columns。
+第一階段已把 11 個主頁籤收斂成 5 個專業流程頁：
+1. 今日決策：今日雷達、最終需要處理的股票、等待確認原因、TradingView 式行動清單。
+2. 交易計畫：持倉下單計畫 + 隔日掛單計畫 + 最終買賣區間。
+3. 圖表分析：價格圖表 + Trade Vision / TradingView-like K 線、SMC、指標 overlays。
+4. 策略驗證：隔日策略工作台 + 策略買賣點 + 回測證據入口。
+5. 研究中心：回測 / Smart Tuning、因子研究、歸因分析、股票關係、Training Data 二級頁籤。
+
+每個主頁頂部必須說明「本頁回答什麼問題」與下一步；研究中心預設是進階研究，不應干擾日常交易流程。
 
 ## Training data contract
 `src/ai_stock/training_data.py` 產生每檔股票每日一列：
