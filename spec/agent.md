@@ -20,9 +20,11 @@
 - `src/ai_stock/backtesting.py`：快速 walk-forward 回測、勝率/最大回撤/停損命中率/累積報酬、持有天數與出場規則比較
 - `src/ai_stock/forecasting.py`：ARIMA / sklearn fallback、Kelly、買賣停損參考、回撤與 risk unit、Kelly / 決策原因提示
 - `src/ai_stock/order_planner.py`：隔日掛單計畫；用持倉、決策報表與最近日內波動產生可成交買賣區、戰術/硬停損與觸及機率；整合 15m / 1h / 1d SMC 信心分數、買賣急迫度與優先處理分數；研究輔助，不自動下單
+- `src/ai_stock/order_strategy_workbench.py`：隔日策略工作台；按鈕觸發比較布林、SMC、UKF 動能、KD/MACD、SHAP 因子代理策略，依股票範圍、持有天數、風險耐受度與回測期間輸出策略勝率、適配分數與最終買賣停損區間；研究輔助，不自動下單
 - `src/ai_stock/swing_order_chart.py`：隔日掛單技術圖；表格 row 聯動 K 線、布林、RSI、MACD、成交量、K 線型態、FVG/IFVG、Order Block、Liquidity、Swing、SFP、BOS/ChoCH、掛單區與 UKF-style 去噪動能
 - `src/ai_stock/smc_adapter.py`：smartmoneyconcepts optional adapter；第三方 SMC engine 優先，資料不足或套件失敗時 fallback 內建規則
 - `spec/next_day_order_planner_spec.md`：隔日掛單計畫完整 spec，含可成交價格、SMC 多週期、熱力表與圖例說明
+- `spec/next_day_strategy_workbench_spec.md`：隔日策略工作台完整 spec，含股票範圍、風險耐受度、持有天數、策略欄位、回測期間、策略適配分數與最終掛單區間
 - `src/ai_stock/trade_vision.py`：智能交易視覺中心；市場結構、BOS/ChoCH、支撐壓力/供需區、MTF Matrix、Signal Score 與交易計畫視覺化
 - `src/ai_stock/pipeline.py`：程式化分析 pipeline
 - `src/ai_stock/app.py`：Streamlit UI；右上角可切換繁中 / English / 日本語 / 한국어

@@ -13,6 +13,7 @@ from ai_stock.data_sources import DataRequest, clear_yfinance_disk_cache, load_h
 from ai_stock.forecasting import build_decision_report
 from ai_stock.portfolio import build_portfolio_order_plan, load_local_portfolio, portfolio_tickers, summarize_portfolio
 from ai_stock.order_planner import augment_order_plan_with_smc, build_next_day_order_plan, build_smc_timeframe_signals
+from ai_stock.order_strategy_workbench import ORDER_STRATEGIES, build_order_strategy_workbench
 from ai_stock.swing_order_chart import build_swing_order_technical_chart, summarize_swing_order_technical_context
 from ai_stock.visual_insights import (
     build_decision_price_chart,
@@ -870,6 +871,86 @@ def _humanize_smart_tuning(tuning: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _humanize_strategy_workbench_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    out = summary.copy()
+    for col in ["win_rate", "stop_hit_rate"]:
+        if col in out.columns:
+            out[col] = out[col] * 100
+    out = translate_dataframe_values(out, UI_LANG)
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "ticker": "代號",
+                "strategy_label": "策略欄位",
+                "holding_days": "持有天數",
+                "risk_tolerance_pct": "風險耐受度%",
+                "backtest_range": "回測期間",
+                "trade_count": "交易次數",
+                "win_rate": "勝率%",
+                "avg_return_pct": "平均報酬%",
+                "cumulative_return_pct": "累積報酬%",
+                "max_drawdown_pct": "最大回撤%",
+                "stop_hit_rate": "停損命中率%",
+                "profit_factor": "Profit Factor",
+                "strategy_edge_score": "策略適配分數",
+                "latest_signal": "最新策略訊號",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _humanize_strategy_order_recommendations(orders: pd.DataFrame) -> pd.DataFrame:
+    if orders.empty:
+        return orders
+    out = orders.copy()
+    out = translate_dataframe_values(out, UI_LANG)
+    return translate_dataframe_columns(
+        out.rename(
+            columns={
+                "ticker": "代號",
+                "best_strategy_label": "最佳策略",
+                "holding_days": "持有天數",
+                "risk_tolerance_pct": "風險耐受度%",
+                "side": "處理方向",
+                "urgency_score": "買賣迫切度",
+                "strategy_edge_score": "策略適配分數",
+                "buy_low": "買進區低",
+                "buy_high": "買進區高",
+                "sell_low": "賣出區低",
+                "sell_high": "賣出區高",
+                "stop_loss": "停損價",
+                "take_profit": "停利參考",
+                "reason": "理由",
+            }
+        ),
+        UI_LANG,
+    )
+
+
+def _build_strategy_score_chart(summary: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if summary.empty:
+        return fig
+    work = summary.copy()
+    work["label"] = work["ticker"].astype(str) + " / " + work["strategy_label"].astype(str)
+    work = work.sort_values("strategy_edge_score", ascending=True).tail(25)
+    fig.add_trace(
+        go.Bar(
+            x=work["strategy_edge_score"],
+            y=work["label"],
+            orientation="h",
+            marker_color=["#16a34a" if float(v) >= 65 else "#eab308" if float(v) >= 45 else "#dc2626" for v in work["strategy_edge_score"]],
+            customdata=work[["win_rate", "trade_count", "avg_return_pct", "profit_factor"]],
+            hovertemplate="%{y}<br>適配分數=%{x:.0f}<br>勝率=%{customdata[0]:.1%}<br>交易=%{customdata[1]}<br>平均報酬=%{customdata[2]:.2f}%<br>PF=%{customdata[3]:.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=520, margin={"l": 10, "r": 10, "t": 20, "b": 10}, xaxis={"range": [0, 100], "title": "策略適配分數"})
+    return fig
+
+
 def _build_smart_tuning_chart(tuning: pd.DataFrame) -> go.Figure:
     work = tuning.sort_values("score", ascending=True).tail(20).copy()
     fig = go.Figure()
@@ -1533,7 +1614,7 @@ else:
             "Kelly 是半 Kelly 且有上限，適合當倉位參考，不是必然下單比例。"
         )
 
-tab_decision, tab_portfolio, tab_next_day_order, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "持倉下單計畫", "隔日掛單計畫", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
+tab_decision, tab_portfolio, tab_next_day_order, tab_order_strategy, tab_chart, tab_trade_vision, tab_backtest, tab_factor, tab_attribution, tab_relation, tab_raw = st.tabs(["決策報表", "持倉下單計畫", "隔日掛單計畫", "隔日策略工作台", "價格圖表", "智能交易視覺中心", "回測", "因子研究", "歸因分析", "股票關係", "資料明細"])
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
@@ -1741,6 +1822,125 @@ with tab_next_day_order:
             file_name="ai_stock_next_day_order_plan.csv",
             mime="text/csv",
         )
+
+with tab_order_strategy:
+    st.subheader("隔日策略工作台")
+    st.caption("這裡不再只依賴 Kelly 0/非 0，而是讓你先選股票、風險耐受度、持有天數、策略欄位與回測期間，再按鈕回測不同策略是否符合該股票股性，最後回推隔日掛單區間與買賣迫切度。")
+    if next_day_order_plan.empty:
+        st.info("目前沒有隔日掛單計畫資料；請先確認持倉檔與行情資料。")
+    else:
+        if "order_strategy_workbench_result" not in st.session_state:
+            st.session_state.order_strategy_workbench_result = None
+        if "order_strategy_workbench_signature" not in st.session_state:
+            st.session_state.order_strategy_workbench_signature = None
+
+        available_order_tickers = list(next_day_order_plan["ticker"].dropna().astype(str).str.upper().unique())
+        ctl1, ctl2, ctl3 = st.columns([0.32, 0.34, 0.34])
+        with ctl1:
+            strategy_scope = st.radio("策略工作台股票範圍", ["全選", "自選"], horizontal=True, index=0)
+            if strategy_scope == "全選":
+                strategy_tickers = available_order_tickers
+            else:
+                strategy_tickers = st.multiselect("選擇策略工作台股票", available_order_tickers, default=available_order_tickers[:1])
+        with ctl2:
+            strategy_holding_days = st.select_slider("工作台持有天數", options=[1, 5, 10, 15, 30], value=5, help="所有策略回測與掛單區間都用同一個持有天數作為基準，避免 1 天訊號和 30 天訊號混在一起。")
+            strategy_risk_tolerance_pct = st.slider("風險耐受度%", 1.0, 30.0, 10.0, step=0.5, help="用於策略回測停損與掛單風險寬度；預設 10%。")
+        with ctl3:
+            strategy_backtest_range = st.selectbox("工作台回測期間", ["1周", "2周", "1個月", "3個月", "半年", "1年"], index=3)
+            selected_strategy_labels = st.multiselect(
+                "策略欄位",
+                list(ORDER_STRATEGIES.values()),
+                default=list(ORDER_STRATEGIES.values()),
+                help="策略屬於離散規則，使用勾選比拉 bar 更清楚；風險耐受度這種連續值才用 slider。",
+            )
+        label_to_strategy = {label: key for key, label in ORDER_STRATEGIES.items()}
+        selected_strategy_keys = [label_to_strategy[label] for label in selected_strategy_labels]
+        strategy_signature = (
+            tuple(strategy_tickers),
+            tuple(selected_strategy_keys),
+            int(strategy_holding_days),
+            float(strategy_risk_tolerance_pct),
+            str(strategy_backtest_range),
+            str(prices["date"].min()),
+            str(prices["date"].max()),
+            int(len(prices)),
+        )
+        run_order_strategy_workbench = st.button("啟動隔日策略回測", type="primary", use_container_width=True)
+        if not strategy_tickers:
+            st.warning("請至少選一檔股票，或改成全選。")
+        elif not selected_strategy_keys:
+            st.warning("請至少勾選一個策略欄位。")
+        elif run_order_strategy_workbench:
+            with st.spinner("正在執行隔日策略工作台回測…"):
+                st.session_state.order_strategy_workbench_result = build_order_strategy_workbench(
+                    prices,
+                    next_day_order_plan,
+                    selected_tickers=strategy_tickers,
+                    strategies=selected_strategy_keys,
+                    holding_days=int(strategy_holding_days),
+                    risk_tolerance_pct=float(strategy_risk_tolerance_pct),
+                    backtest_range=strategy_backtest_range,
+                )
+                st.session_state.order_strategy_workbench_signature = strategy_signature
+        result = st.session_state.order_strategy_workbench_result
+        if result is None:
+            st.info("請先選擇股票 / 持有天數 / 風險耐受度 / 策略欄位 / 回測期間，然後按『啟動隔日策略回測』。建議先單檔測，再全選。")
+        else:
+            if st.session_state.order_strategy_workbench_signature != strategy_signature:
+                st.warning("目前顯示的是上一次策略工作台結果；參數已改變，若要更新請再按一次『啟動隔日策略回測』。")
+            summary = result.get("summary", pd.DataFrame())
+            orders = result.get("order_recommendations", pd.DataFrame())
+            if summary.empty:
+                st.info("目前參數下沒有足夠交易樣本。請拉長回測期間、放寬策略或選其他股票。")
+            else:
+                st.markdown("#### 策略勝率 / 股性適配表")
+                st.caption("勝率不是唯一依據；工作台同時看平均報酬、累積報酬、Profit Factor、最大回撤與停損命中率，產生策略適配分數。")
+                st.plotly_chart(_build_strategy_score_chart(summary), use_container_width=True)
+                summary_display = _humanize_strategy_workbench_summary(summary)
+                st.dataframe(
+                    summary_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        t("交易次數", UI_LANG): st.column_config.NumberColumn(format="%d"),
+                        t("勝率%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                        t("平均報酬%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                        t("累積報酬%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                        t("最大回撤%", UI_LANG): st.column_config.NumberColumn(format="%.2f%%"),
+                        t("停損命中率%", UI_LANG): st.column_config.NumberColumn(format="%.1f%%"),
+                        t("Profit Factor", UI_LANG): st.column_config.NumberColumn(format="%.2f"),
+                        t("策略適配分數", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                    },
+                )
+            if not orders.empty:
+                st.markdown("#### 最佳掛單區間")
+                st.caption("把策略適配分數與隔日掛單可成交區合併，重新排序買賣迫切度。BUY 偏綠色掛買進區，SELL 偏紅色看賣出/減碼/保護區，WAIT 代表仍需等技術圖確認。")
+                order_display = _humanize_strategy_order_recommendations(orders)
+                st.dataframe(
+                    order_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        t("買賣迫切度", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                        t("策略適配分數", UI_LANG): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                        t("買進區低", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                        t("買進區高", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                        t("賣出區低", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                        t("賣出區高", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                        t("停損價", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                        t("停利參考", UI_LANG): st.column_config.NumberColumn(format="%.3f"),
+                        t("理由", UI_LANG): st.column_config.TextColumn(width="large"),
+                    },
+                )
+                st.download_button(
+                    "下載隔日策略工作台 CSV",
+                    order_display.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="ai_stock_next_day_strategy_workbench.csv",
+                    mime="text/csv",
+                )
+        with st.expander("為什麼這裡不再只看 Kelly？", expanded=False):
+            st.write("Kelly 容易在預估優勢小於波動風險時變成 0.0%，適合作為倉位保守上限，但不適合單獨決定隔日掛單。策略工作台改用可勾選策略 + 指定持有天數 + 指定風險耐受度 + 近端回測，先確認這檔股票近期股性比較吃哪種策略，再回推買賣區間。")
+            st.write("策略欄位用勾選，因為布林、SMC、UKF、KD/MACD、SHAP 因子代理是離散方法；風險耐受度用 slider，因為它是連續參數。")
 
 with tab_chart:
     left, right = st.columns([1, 2])
