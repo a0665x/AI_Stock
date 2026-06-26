@@ -5,7 +5,7 @@ APP = Path("src/ai_stock/app.py")
 
 def test_training_data_center_ui_exists_and_uses_plain_language() -> None:
     source = APP.read_text()
-    assert "研究與訓練資料" in source
+    assert "Training Data Studio：分析結果數據" in source
     assert "分析結果數據（Training Data）" in source
     assert "預測幾天後" in source
     assert "等待確認" in source

@@ -12,11 +12,11 @@ def test_main_navigation_is_simplified_to_five_professional_tabs():
     assert "tab_dashboard, tab_orders, tab_charts, tab_strategy_lab, tab_research = st.tabs" in src
     assert '["今日決策", "交易計畫", "圖表分析", "策略驗證", "研究中心"]' in src
     assert 'st.tabs(["決策總覽", "持倉下單計畫", "隔日掛單計畫"' not in src
-    assert "research_backtest_tab" in src
+    assert "research_overview_tab" in src
+    assert "research_lab_tab" in src
     assert "research_factor_tab" in src
-    assert "research_attribution_tab" in src
-    assert "research_relation_tab" in src
     assert "research_training_tab" in src
+    assert "research_risk_tab" in src
 
 
 def test_each_simplified_tab_has_purpose_and_next_step_copy():

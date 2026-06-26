@@ -1705,13 +1705,49 @@ with tab_charts:
 with tab_strategy_lab:
     st.info("本頁回答：這個策略近期對這檔股票有效嗎？先單檔驗證勝率、Profit Factor、最大回撤，再決定是否信任掛單訊號。")
 with tab_research:
-    st.info("本頁回答：模型為什麼這樣判斷？研究因子、歸因、相關性與訓練資料；一般下單不需要每天使用。")
-    research_backtest_tab, research_factor_tab, research_attribution_tab, research_relation_tab, research_training_tab = st.tabs(["回測 / Smart Tuning", "因子研究", "SHAP 歸因", "股票關係", "訓練資料"])
-tab_backtest = research_backtest_tab
+    st.info("本頁回答：模型為什麼這樣判斷？研究因子、策略回測、關聯風險與訓練資料；一般下單不需要每天使用。")
+    with st.expander("研究中心怎麼使用？", expanded=True):
+        st.write("先看 Research Radar：像 TradingView watchlist + backtest dashboard 一樣，快速掃描策略品質、風險與資料狀態。")
+        st.write("再進 Strategy Tester：像 TradingView 的 Strategy Tester，檢查勝率、Profit Factor、最大回撤與逐筆交易。")
+        st.write("接著看 Factor Explorer：找出最有效的因子欄位與 SHAP/fallback 歸因，不要只看單一報酬數字。")
+        st.write("最後到 Training Data Studio：下載每日價格、指標、SMC、訊號與未來報酬目標，作為未來 AI model 訓練資料。")
+        st.write("顏色語意：綠色代表表現或關聯較強；黃色代表中性待確認；紅色代表風險、回撤或負向壓力較高。")
+        st.write("AUC 接近 50% 代表接近隨機；Profit Factor 大於 1 才代表獲利交易金額大於虧損交易金額；最大回撤是策略曾經從高點跌下來的最大幅度。")
+    research_overview_tab, research_lab_tab, research_factor_tab, research_training_tab, research_risk_tab = st.tabs(["總覽", "策略實驗室", "因子排行", "訓練資料", "風險與關聯"])
+tab_backtest = research_lab_tab
 tab_factor = research_factor_tab
-tab_attribution = research_attribution_tab
-tab_relation = research_relation_tab
+tab_attribution = research_factor_tab
+tab_relation = research_risk_tab
 tab_raw = research_training_tab
+
+with research_overview_tab:
+    st.subheader("Research Radar")
+    st.caption("專業研究總覽：把回測品質、風險警訊、因子研究與資料集狀態放在同一張雷達板，先確認研究是否值得深入。")
+    st.info("這裡不自動重跑昂貴模型；按『執行研究總覽快照』只整理目前已載入的決策、回測與資料狀態，避免拖慢首頁。")
+    run_research_overview = st.button("執行研究總覽快照", use_container_width=True, help="整理目前已載入結果，不自動執行 SHAP 或多預測天數因子模型。")
+    if run_research_overview or st.session_state.get("research_overview_ready", False):
+        st.session_state.research_overview_ready = True
+        research_cols = st.columns(4)
+        research_cols[0].metric("研究股票數", f"{len(visible_tickers)}")
+        research_cols[1].metric("價格資料列", f"{len(prices):,}")
+        research_trades = int(backtest.summary.get("trades", pd.Series(dtype=float)).sum()) if not backtest.summary.empty else 0
+        best_pf = float(backtest.summary.get("profit_factor", pd.Series([0])).max()) if not backtest.summary.empty else 0.0
+        research_cols[2].metric("回測交易數", f"{research_trades}")
+        research_cols[3].metric("最佳 Profit Factor", f"{best_pf:.2f}")
+        st.markdown("#### 研究流程快捷入口")
+        st.write("1. Strategy Tester：先看勝率、Profit Factor、最大回撤與交易次數，避免樣本太少。")
+        st.write("2. Factor Explorer：再看哪些欄位真正和未來幾天報酬有關，SMC 也會當成因子欄位。")
+        st.write("3. Training Data Studio：最後輸出可訓練資料，包含 OHLCV、指標、SMC、信號、target_available。")
+        st.write("4. Risk & Correlation Monitor：檢查標的是否同漲同跌、是否集中在同一種風險。")
+        st.markdown("#### 研究品質警示")
+        if backtest.summary.empty:
+            st.warning("目前沒有足夠回測資料；請拉長歷史區間或降低訓練視窗。")
+        elif best_pf < 1:
+            st.warning("最佳 Profit Factor 低於 1，代表目前回測中虧損交易金額可能大於獲利交易金額。")
+        else:
+            st.success("目前至少有一組策略 Profit Factor 大於 1，可進一步查看策略實驗室與因子排行。")
+    else:
+        st.info("尚未執行研究總覽快照。按下按鈕後會產生 Research Radar 摘要。")
 
 with tab_decision:
     st.subheader("買 / 賣 / 停損決策報表")
@@ -2223,7 +2259,7 @@ with tab_trade_vision:
                     st.dataframe(zones.tail(20), use_container_width=True, hide_index=True)
 
 with tab_backtest:
-    st.subheader("Walk-forward 回測")
+    st.subheader("Strategy Tester：策略回測與參數實驗")
     st.caption("每隔一段『預計持有天數』，只使用當下以前的資料重新產生決策報表，再用下一段行情驗證。這不是實盤成交模擬，先用來檢查策略方向、停損與回撤是否合理。")
     with st.expander("回測設定", expanded=True):
         cfg1, cfg2, cfg3 = st.columns(3)
@@ -2320,7 +2356,7 @@ with tab_backtest:
                 mime="text/csv",
             )
 
-        st.markdown("#### Smart Tuning Lite")
+        st.markdown("#### Smart Tuning Lite：參數掃描")
         st.caption("掃描持有天數、出場規則與風險寬度，依累積報酬、勝率、Profit Factor、最大回撤與停損率產生綜合分數。")
         smart_current = st.session_state.smart_tuning_signature == tab_smart_tuning_signature and not st.session_state.smart_tuning_result.empty
         run_smart = st.button(
@@ -2421,7 +2457,7 @@ with tab_backtest:
                 )
 
 with tab_factor:
-    st.subheader("因子研究：過去 N 天因子 → 未來多個預測天數 漲跌")
+    st.subheader("Factor Explorer：因子排行與多預測天數研究")
     st.caption(
         "用 sliding window 收集歷史樣本：X 是過去 N 天 K線、KD、MACD、RSI、量能、波動與回撤等因子；"
         "y 是未來 1/3/5/10 天報酬是否高於漲跌門檻。每個預測天數獨立訓練與歸因；這是模型歸因與統計關聯，不是因果證明。"
@@ -2467,7 +2503,7 @@ with tab_factor:
     factor_tables = st.session_state.factor_research_report
     factor_is_current = current_factor_signature == factor_signature and factor_tables is not None
     run_factor = st.button(
-        "執行多個預測天數 因子研究",
+        "執行因子排行",
         type="primary",
         use_container_width=True,
         help="按下後才針對每個預測天數建立 sliding-window dataset、訓練分類模型並計算 SHAP/fallback、相關性與分組勝率。",
@@ -2658,7 +2694,7 @@ with tab_factor:
         )
 
 with tab_attribution:
-    st.subheader("SHAP / 歸因分析")
+    st.subheader("Factor Contribution：SHAP / fallback 歸因")
     st.caption("這裡解釋的是技術指標對『未來報酬模型』的正/負向貢獻；按下按鈕才會計算，切換 sidebar 或分頁不會自動重算。")
     current_attr_signature = st.session_state.shap_signature
     attribution = st.session_state.shap_attribution
@@ -2711,7 +2747,7 @@ with tab_attribution:
             st.info("解讀：綠色代表模型認為該指標提高未來報酬估計；紅色代表拉低估計。這是統計歸因，不代表單一因果。")
 
 with tab_relation:
-    st.subheader("股票間報酬相關性")
+    st.subheader("Risk & Correlation Monitor：關聯風險監控")
     if len(visible_tickers) < 2:
         st.info("至少輸入兩檔股票才會產生相關性分析。")
     else:
@@ -2720,7 +2756,7 @@ with tab_relation:
         st.caption("接近 +1 代表同漲同跌程度高；接近 -1 代表反向；接近 0 代表近期關聯較低。決策表中的『同/反向關係壓力』會把這些關係與近5日同業/反向標的表現合併成輔助訊號。")
 
 with tab_raw:
-    st.subheader("研究與訓練資料中心")
+    st.subheader("Training Data Studio：分析結果數據")
     st.caption("把每天價格、技術指標、SMC/型態信號與未來報酬目標整理成一張可下載的 training data。一般使用者可檢查資料是否合理；研究者可下載後再訓練未來三天趨勢 AI model。")
     with st.expander("頁籤使用目的與簡單名詞", expanded=True):
         st.write("『等待確認』：不是沒有模型，而是舊決策總覽認為預估報酬還沒有大過近期波動與回撤風險；操作上代表先不追價、不新增倉位，已持有者優先看停損與停利。")

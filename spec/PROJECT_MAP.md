@@ -15,7 +15,7 @@
 - 隔日掛單計畫 / Next-Day Order Planner：基於持倉、決策報表與最近日內波動，輸出隔日買進 / 賣出區、戰術停損、硬停損、觸及機率與建議單型；整合 15m / 1h / 1d SMC 訊號產生 SMC 信心分數、買進急迫度、賣出急迫度與優先處理熱力表；若已執行隔日策略工作台，會回寫最終推薦來源/方向/策略/適配分數與最終買賣停損停利區間；表格 row 可聯動下方 swing trading 技術圖，顯示 K 線十字游標、布林、RSI、MACD、成交量、K 線型態、smartmoneyconcepts 優先 / 內建 fallback 的 FVG/IFVG、Order Block、Liquidity、Swing High/Low、SFP 假突破、BOS/ChoCH 結構突破與 UKF-style 去噪動能；研究輔助，不自動下單
 - 隔日策略工作台 / Next-Day Strategy Workbench：按鈕觸發的策略適配檢查；使用者先選單檔或全選、設定風險耐受度、指定 1/5/10/15/30 天持有基準、勾選布林/SMC/UKF/KD-MACD/SHAP 因子代理策略與回測期間，輸出勝率、Profit Factor、回撤、策略適配分數、BUY/SELL/WAIT 迫切度與最終買賣停損區間；同頁可用股票下拉與策略多選檢視策略買賣點、每筆交易垂直進出場虛線、綠/紅獲利虧損連線、策略買賣區、SMC overlay、權益曲線、回撤曲線與策略績效摘要；策略適配分數顏色代表高/中/弱適配，不是 SHAP 正負；左側個人交易偏好可記錄不做當沖、每日每股掛單次數、每次股數/張數與習慣持有天數；結果會合併回隔日掛單計畫作為最終人工掛單區間
 - Sidebar 重構：左側只保留資料來源、股票清單、歷史區間、K 線週期、決策天數、個人交易偏好、CSV 上傳與手動刷新等全域設定；回測/Smart Tuning、因子研究、價格圖成交量等頁面專屬控制項移到各自頁籤內
-- 研究與訓練資料 / Training Data Center：整理每日價格、技術指標、SMC 信號、UKF/K 線型態、未來 1/3/5/10 天報酬與漲跌目標，並排序最有相關性的前 N 個欄位，作為未來 AI model 預估三天趨勢的資料基礎
+- 研究中心 / Professional Research Center：整合 Research Radar、Strategy Tester、Factor Explorer、Training Data Studio 與 Risk & Correlation Monitor；以 TradingView + 回測平台式流程呈現研究品質、策略回測、因子排行、模型歸因、訓練資料與相關風險；顏色語意、AUC、Profit Factor、最大回撤都有白話說明，昂貴分析維持按鈕觸發
 - 技術分析 snapshot
 - 多股票報酬相關性分析（stock relationship / shop analysis）
 - 不使用黑箱 AI 的第一版走勢估計：ARIMA 優先、sklearn robust regression fallback
@@ -58,6 +58,7 @@
 - [`task_understandings/2026-06-24_smc_confidence_mtf_order_urgency.md`](./task_understandings/2026-06-24_smc_confidence_mtf_order_urgency.md)：隔日掛單計畫加入 15m / 1h / 1d SMC 信心分數、買賣急迫度與優先處理熱力表
 - [`task_understandings/2026-06-25_next_day_strategy_workbench.md`](./task_understandings/2026-06-25_next_day_strategy_workbench.md)：隔日策略工作台；可選股票、可承受停損幅度、預計持有天數、策略選擇、歷史驗證期間與最終掛單區間
 - [`task_understandings/2026-06-25_ui_simplification_training_data.md`](./task_understandings/2026-06-25_ui_simplification_training_data.md)：研究與訓練資料中心；建立 daily training data、top correlated columns 與 UI 名詞簡化紀錄
+- [`task_understandings/2026-06-26_professional_research_center.md`](./task_understandings/2026-06-26_professional_research_center.md)：研究中心專業化；導入 Research Radar、Strategy Tester、Factor Explorer、Training Data Studio 與 Risk & Correlation Monitor
 
 ## GitHub 文件入口
 - `README.md`：預設英文 GitHub landing page
